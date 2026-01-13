@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Discordrive v2</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Discordrive v2</h1>
+      <p class="subtitle">Cloud storage powered by Discord</p>
+    </header>
+
+    <section class="upload-section">
+      <form id="upload-form">
+        <label class="file-input-label">
+          <input type="file" id="file-input" hidden>
+          <span class="btn btn-primary">Choose File</span>
+          <span id="file-name">No file selected</span>
+        </label>
+        <button type="submit" class="btn btn-success" id="upload-btn" disabled>Upload</button>
+      </form>
+      <div id="upload-progress" class="progress-bar" hidden>
+        <div class="progress-fill"></div>
+        <span class="progress-text">Uploading...</span>
+        <button type="button" class="btn btn-cancel" id="cancel-btn" hidden>Cancel</button>
+      </div>
+    </section>
+
+    <section class="folders-section">
+      <h2>Folders</h2>
+      <div class="folder-actions-bar">
+        <button class="btn btn-primary btn-small" onclick="createFolder()">+ New Folder</button>
+      </div>
+      <div id="folders-list" class="folders-list"></div>
+    </section>
+
+    <section class="files-section">
+      <h2>Your Files</h2>
+      <div id="files-list" class="files-list">
+        <p class="loading">Loading files...</p>
+      </div>
+    </section>
+
+    <!-- Download Progress Modal -->
+    <div id="download-modal" class="modal" hidden>
+      <div class="modal-content">
+        <h3>Preparing Download</h3>
+        <p id="download-filename"></p>
+        <div class="progress-bar">
+          <div class="progress-fill" id="download-progress-fill"></div>
+          <span class="progress-text" id="download-progress-text">Starting...</span>
+        </div>
+        <button class="btn btn-danger btn-small" id="download-cancel-btn" onclick="cancelDownload()">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Rename Modal -->
+    <div id="rename-modal" class="modal" hidden>
+      <div class="modal-content">
+        <h3 id="rename-title">Rename</h3>
+        <input type="text" id="rename-input" class="text-input" placeholder="Enter new name">
+        <div class="modal-actions">
+          <button class="btn btn-primary" onclick="confirmRename()">Save</button>
+          <button class="btn btn-secondary" onclick="closeRenameModal()">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

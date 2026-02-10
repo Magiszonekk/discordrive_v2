@@ -3,6 +3,7 @@ node_modules/
 
 # Environment
 .env
+legacy.env
 .env.local
 .env*.local
 
@@ -43,3 +44,5 @@ apps/frontend/out/
 
 # pnpm
 pnpm-lock.yaml
+
+dist

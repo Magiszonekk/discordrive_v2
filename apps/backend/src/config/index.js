@@ -114,4 +114,23 @@ function validateConfig() {
   }
 }
 
-module.exports = { config, validateConfig };
+/**
+ * Convert backend's nested config to @discordrive/core's flat DiscordriveConfig format.
+ */
+function toCoreConfig() {
+  return {
+    discordTokens: config.discord.tokens,
+    channelIds: config.discord.channelIds,
+    dbPath: config.db.path,
+    botsPerChannel: config.discord.botsPerChannel,
+    chunkSize: config.upload.chunkSize,
+    batchSize: config.upload.batchSize,
+    downloadConcurrency: config.download.concurrency,
+    encrypt: config.encryption.enabled,
+    encryptionKey: config.encryption.key,
+    tempDir: config.upload.tempDir,
+    botInitRetries: config.discord.botInitRetries,
+  };
+}
+
+module.exports = { config, validateConfig, toCoreConfig };

@@ -10,6 +10,8 @@ const db = require('../db');
 const { ApiError, asyncHandler } = require('../middleware/errorHandler');
 const { formatFileSize } = require('../utils/file');
 const { appendFileToArchive, downloadEncryptedFileToTemp, createDecryptionStream } = require('../services/storageAssembler');
+const { downloadRangeStream, resolveConfig } = require('@discordrive/core');
+const { toCoreConfig } = require('../config');
 
 const router = express.Router();
 const activePublicDownloads = new Map(); // token -> progress state
@@ -472,12 +474,11 @@ router.get('/:token/thumb', asyncHandler(async (req, res) => {
   }
 }));
 
-// Stream video for embeds (for Discord/social embeds)
+// Stream video/audio with HTTP Range support for seeking
 router.get('/:token/stream', asyncHandler(async (req, res) => {
   const share = db.getShareByToken(req.params.token);
   ensureShareIsActive(share);
 
-  // Only allow for insecure shares (with embedded key)
   if (!share.allow_insecure) {
     throw new ApiError(403, 'Stream only available for links with embedded key');
   }
@@ -496,15 +497,48 @@ router.get('/:token/stream', asyncHandler(async (req, res) => {
   }
 
   const encryptionKey = await resolveShareKey(share, req);
+  const fileSize = file.size;
 
-  // Download and decrypt the video
+  // Parse Range header
+  const rangeHeader = req.headers.range;
+  if (rangeHeader) {
+    const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+    if (!match) {
+      res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+      return;
+    }
+
+    const rangeStart = parseInt(match[1], 10);
+    const rangeEnd = match[2] ? parseInt(match[2], 10) : Math.min(rangeStart + 8 * 1024 * 1024 - 1, fileSize - 1);
+
+    if (rangeStart >= fileSize || rangeEnd >= fileSize || rangeStart > rangeEnd) {
+      res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+      return;
+    }
+
+    const coreConfig = resolveConfig(toCoreConfig());
+    const rangeStream = await downloadRangeStream(file, rangeStart, rangeEnd, coreConfig, encryptionKey);
+    const contentLength = rangeEnd - rangeStart + 1;
+
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${rangeStart}-${rangeEnd}/${fileSize}`);
+    res.setHeader('Content-Length', contentLength);
+    res.setHeader('Content-Type', file.mime_type);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+
+    await pipeline(rangeStream, res);
+    return;
+  }
+
+  // No Range header — full download
   const tempFile = await downloadEncryptedFileToTemp(file, 'share-stream');
 
   try {
     const { stream: plainStream } = await createDecryptionStream(tempFile, file, encryptionKey);
 
     res.setHeader('Content-Type', file.mime_type);
-    res.setHeader('Content-Length', file.size);
+    res.setHeader('Content-Length', fileSize);
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'public, max-age=3600');
 

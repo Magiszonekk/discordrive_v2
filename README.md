@@ -6,82 +6,192 @@ Self-hosted cloud storage that uses Discord as free unlimited backend. Zero-know
 
 ## Features
 
-- **Zero-knowledge encryption** - AES-256-GCM in browser, keys never leave your device
-- **Cloud Key Backup** - Optional password-locked key sync for multi-device use
+- **Zero-knowledge encryption** - AES-256-GCM, keys never leave your device
+- **Server-side encryption** - Optional PBKDF2-derived AES-256-GCM (per-chunk, independent IVs)
+- **Video/audio streaming** - HTTP Range support for seeking without downloading entire file
 - **Multi-bot parallelism** - Unlimited Discord bots with automatic load balancing
+- **Multi-channel support** - Spread storage across multiple Discord channels
 - **File & folder management** - Organize, move, rename, share publicly
 - **Password protection** - Lock files/folders with additional password
 - **Public sharing** - Share with password or embedded key in URL
-- **Discord embeds** - Shared videos/images show as playable embeds on Discord
-- **ZIP export** - Download folders as ZIP (client-side decryption)
-- **Bug reporting** - Built-in bug report form stored in database
+- **Discord embeds** - Shared videos/images show as playable embeds
+- **ZIP export** - Download folders as ZIP
+- **@discordrive/core** - Reusable npm package for programmatic access
+- **Bug reporting** - Built-in bug report form
 - **Mobile friendly** - Responsive UI with touch controls
+
+## Architecture
+
+```
+discordrive/
+  apps/
+    backend/       Express API server (Node.js)
+    frontend/      Web UI (Next.js)
+    gallery/       Media gallery app
+  packages/
+    core/          @discordrive/core — shared library (TypeScript)
+    shared/        @discordrive/shared — shared constants & types
+```
+
+Monorepo managed with **pnpm workspaces** + **Turborepo**.
 
 ## Quick Start
 
-### 1. Clone & install
+### 1. Install
+
 ```bash
 git clone <repo>
 cd discordrive_v2
-npm install
-cd frontend && npm install && npm run build && cd ..
+pnpm install
+pnpm build
 ```
 
 ### 2. Configure `.env`
+
 ```env
-# Discord
+# Discord — at least one token + one channel required
 DISCORD_CHANNEL_ID=your_channel_id
 DISCORD_TOKEN=your_bot_token
 
-# Server
-PORT=3001
-HOST=localhost
-PUBLIC_BASE_URL=http://localhost:3001
+# Multiple bots/channels (optional)
+DISCORD_TOKEN_2=second_bot_token
+DISCORD_CHANNEL_2_ID=second_channel_id
+BOTS_PER_CHANNEL=6
 
-# Upload settings
+# Server
+PORT=3000
+HOST=0.0.0.0
+PUBLIC_BASE_URL=https://your-domain.com
+
+# Encryption (optional — omit for client-only encryption)
+ENCRYPTION_KEY=your-secret-passphrase
+# DISCORDRIVE_ENCRYPT=false              # disable server-side encryption
+
+# Upload
 UPLOAD_TEMP_DIR=./data/temp
-UPLOAD_BATCH_SIZE=3
-MAX_FILE_SIZE=0
-CHUNK_SIZE=8388608
+UPLOAD_BATCH_SIZE=5
+CHUNK_SIZE=8387584                       # ~8MB per chunk (max 25MB for Discord)
+MAX_FILE_SIZE=32212254720                # ~30GB
+
+# Download
 DOWNLOAD_CONCURRENCY=6
 
-# Email (optional - for signup/reset)
+# Bot init
+BOT_INIT_RETRIES=5
+
+# Email (SMTP) — for signup/password reset
 SMTP_HOST=smtp.example.com
-SMTP_PORT=465
+SMTP_PORT=587
 SMTP_USER=user@example.com
 SMTP_PASS=password
-EMAIL_FROM=noreply@example.com
+EMAIL_FROM=Discordrive <user@example.com>
 ```
 
 ### 3. Run
+
 ```bash
-npm start
+# Development (frontend + backend)
+pnpm dev
+
+# Backend only
+pnpm dev:backend
+
+# Frontend only
+pnpm dev:frontend
+
+# Production
+pnpm build && pnpm start
 ```
 
-Open `http://localhost:3001` in your browser.
+## Scripts
+
+| Command | Description |
+|---------|-------------|
+| `pnpm dev` | Start all apps in dev mode |
+| `pnpm dev:backend` | Start backend only |
+| `pnpm dev:frontend` | Start frontend only |
+| `pnpm build` | Build all packages and apps |
+| `pnpm start` | Start in production mode |
+| `pnpm discordrive:clear` | Wipe ALL files from Discord + database (keeps users) |
+| `pnpm clean` | Remove build artifacts and node_modules |
 
 ## Multi-bot Setup
 
 Add multiple bots for parallel uploads:
+
 ```env
 DISCORD_TOKEN=bot1_token
 DISCORD_TOKEN_2=bot2_token
 DISCORD_TOKEN_3=bot3_token
+# ...up to as many as you want
 ```
 
-## Discord Embeds
+Multiple channels:
 
-When sharing videos or images with "embed key in link" option:
-- Media dimensions are automatically detected during upload
-- Shared links generate Open Graph meta tags
-- Discord displays playable video/image previews inline
-- Works with any platform that reads OG tags (Twitter, Slack, etc.)
+```env
+DISCORD_CHANNEL_ID=channel_1
+DISCORD_CHANNEL_2_ID=channel_2
+BOTS_PER_CHANNEL=6
+```
+
+## Encryption
+
+Two encryption modes:
+
+**Client-side (zero-knowledge):** Browser encrypts with WebCrypto before upload. Server never sees plaintext. No `ENCRYPTION_KEY` needed.
+
+**Server-side:** Set `ENCRYPTION_KEY` in `.env`. Each file chunk gets:
+- Unique salt (PBKDF2, 100k iterations)
+- Unique IV (12 bytes)
+- Unique auth tag (16 bytes)
+- AES-256-GCM encryption
+
+Per-chunk independent encryption enables Range-based video streaming with seeking.
+
+## Video Streaming
+
+Share links for video/audio support HTTP Range requests:
+
+```html
+<video controls src="https://your-domain.com/s/TOKEN/stream"></video>
+```
+
+The backend downloads and decrypts **only the chunks needed** for the requested byte range — seeking to minute 30 doesn't require downloading minutes 0-29.
+
+## @discordrive/core
+
+The core package can be used as a standalone library:
+
+```typescript
+import Discordrive from '@discordrive/core';
+
+const drive = new Discordrive({
+  discordTokens: ['bot-token'],
+  channelIds: ['channel-id'],
+  encrypt: true,
+  encryptionKey: 'my-secret',
+});
+
+await drive.init();
+
+// Upload & share
+const { share } = await drive.uploadAndShare('./video.mp4');
+console.log(share.url);
+
+// Download
+await drive.download(fileId, './output.mp4');
+
+// Stream
+const stream = await drive.downloadStream(fileId);
+
+await drive.destroy();
+```
 
 ## API Endpoints
 
 ### Files
 - `GET /api/files` - List files & folders
-- `POST /api/files` - Start upload session
+- `POST /api/files` - Upload file
 - `PATCH /api/files/:id` - Update file (move/rename)
 - `DELETE /api/files/:id` - Delete file
 - `GET /api/files/:id/download` - Download file
@@ -98,21 +208,19 @@ When sharing videos or images with "embed key in link" option:
 - `POST /api/shares` - Create share
 - `DELETE /api/shares/:id` - Revoke share
 - `GET /s/:token` - Public share page
-
-### Bug Reports
-- `POST /api/bugs` - Submit bug report (public)
-- `GET /api/bugs` - List reports (auth required)
-- `PATCH /api/bugs/:id/status` - Update status (auth required)
+- `GET /s/:token/stream` - Stream video/audio (Range support)
 
 ### Other
 - `GET /api/health` - Health check
-- `GET /api/stats` - Storage stats
-- `GET /api/config` - Client config
+- `GET /api/gallery/media` - Media files
+- `POST /api/bugs` - Submit bug report
 
 ## Tech Stack
 
 **Backend:** Express.js, Discord.js, SQLite (better-sqlite3), Nodemailer
-**Frontend:** Next.js, React, WebCrypto API, Web Workers, Tailwind CSS, Radix UI
+**Frontend:** Next.js, React, WebCrypto API, Tailwind CSS, Radix UI
+**Core:** TypeScript, tsup (CJS + ESM dual build)
+**Tooling:** pnpm, Turborepo
 
 ## License
 

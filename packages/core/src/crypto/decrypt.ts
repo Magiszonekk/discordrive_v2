@@ -59,7 +59,7 @@ export async function createDecryptionStream(
   return { stream: plainStream };
 }
 
-async function deriveKeyFromHeader(header: any, encryptionKey: string): Promise<Buffer> {
+export async function deriveKeyFromHeader(header: any, encryptionKey: string): Promise<Buffer> {
   const salt = parseVectorField(header.salt || header.saltBase64 || header.salt_hex || header.saltHex);
   const iterations = header.pbkdf2Iterations || header.pbkdf2 || 100000;
   if (!salt.length) throw new Error('Invalid encryption header salt');

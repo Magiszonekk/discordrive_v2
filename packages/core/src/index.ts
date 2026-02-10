@@ -285,6 +285,7 @@ export { DiscordriveDatabase } from './db/database.js';
 export { uploadFile } from './upload/orchestrator.js';
 export { downloadFile, downloadStream } from './download/orchestrator.js';
 export { downloadPartsToFile } from './download/part-downloader.js';
+export { calculateChunkRange, downloadRangeStream } from './download/range-stream.js';
 
 // Share
 export { createFileShare, createFolderShare } from './share/manager.js';
@@ -292,7 +293,7 @@ export { createShareRouter } from './share/middleware.js';
 
 // Crypto
 export { deriveKey, encryptChunk, generateEncryptionHeader, generateSalt } from './crypto/encrypt.js';
-export { createDecryptionStream } from './crypto/decrypt.js';
+export { createDecryptionStream, deriveKeyFromHeader } from './crypto/decrypt.js';
 export { parseEncryptionHeader, isChunkedHeader, parseVectorField } from './crypto/utils.js';
 
 // Utilities
@@ -328,3 +329,4 @@ export type {
   FileItem,
   StatusInfo,
 } from './types.js';
+export type { ChunkRange } from './download/range-stream.js';

@@ -10,7 +10,8 @@
     "dev:frontend": "turbo dev --filter=@discordrive/frontend",
     "start": "turbo start",
     "lint": "turbo lint",
-    "clean": "turbo clean && rm -rf node_modules"
+    "clean": "turbo clean && rm -rf node_modules",
+    "discordrive:clear": "pnpm --filter @discordrive/backend discordrive:clear"
   },
   "keywords": [
     "discord",

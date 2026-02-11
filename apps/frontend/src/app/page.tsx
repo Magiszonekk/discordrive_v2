@@ -134,7 +134,7 @@ export default function HomePage() {
   );
 
   return (
-    <div className="min-h-screen bg-muted/30 text-foreground">
+    <div className="h-screen flex flex-col bg-muted/30 text-foreground overflow-hidden">
       <Header onMenuClick={() => setMobileMenuOpen(true)} />
 
       {/* Mobile sidebar sheet */}
@@ -151,7 +151,7 @@ export default function HomePage() {
       </Sheet>
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        <div className="flex min-h-[calc(100vh-3.5rem)]">
+        <div className="flex flex-1 min-h-0">
           {/* Desktop sidebar - hidden on mobile */}
           <div className="hidden lg:block w-64 border-r shrink-0">
             <Sidebar

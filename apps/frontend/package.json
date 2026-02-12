@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p ${FRONTEND_PORT:-3001}",
+    "dev": "node dev.js dev",
     "build": "next build",
-    "start": "next start -p ${FRONTEND_PORT:-3001}",
+    "start": "node dev.js start",
     "lint": "eslint"
   },
   "dependencies": {
@@ -26,6 +26,7 @@
     "@tanstack/react-query": "^5.90.12",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "dotenv": "^16.6.1",
     "jszip": "^3.10.1",
     "lucide-react": "^0.561.0",
     "next": "16.0.10",

@@ -78,7 +78,7 @@
       "router": {
         "origin": false
       },
-      "apiBase": "http://146.59.126.32:3000/api"
+      "apiBase": "https://discordrive.cikowice.pl/api"
     }
   }
 }

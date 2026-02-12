@@ -59,9 +59,11 @@ DISCORD_CHANNEL_2_ID=second_channel_id
 BOTS_PER_CHANNEL=6
 
 # Server
-PORT=3000
 HOST=0.0.0.0
+PORT=3000                                # Backend (Express)
+FRONTEND_PORT=3001                       # Frontend (Next.js)
 PUBLIC_BASE_URL=https://your-domain.com
+FRONTEND_URL=https://your-domain.com
 
 # Encryption (optional — omit for client-only encryption)
 ENCRYPTION_KEY=your-secret-passphrase

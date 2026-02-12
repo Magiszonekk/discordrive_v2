@@ -70,7 +70,6 @@ const config = {
   server: {
     port: parseInt(process.env.PORT, 10) || 3000,
     host: process.env.HOST || 'localhost',
-    legacyFrontendPort: parseInt(process.env.LEGACY_FRONTEND_PORT, 10) || 3001,
     jwtSecret: process.env.JWT_SECRET || 'changeme',
   },
   upload: {

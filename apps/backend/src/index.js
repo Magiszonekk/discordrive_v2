@@ -18,6 +18,7 @@ const publicRouter = require('./routes/public');
 const authRouter = require('./routes/auth');
 const bugsRouter = require('./routes/bugs');
 const galleryRouter = require('./routes/gallery');
+const healthcheckRouter = require('./routes/healthcheck');
 
 async function main() {
   console.log('Discordrive v2 starting...\n');
@@ -53,6 +54,7 @@ async function main() {
   app.use('/api/auth', authRouter);
   app.use('/api/bugs', bugsRouter);
   app.use('/api/gallery', galleryRouter);
+  app.use('/api/healthcheck', healthcheckRouter);
   app.use('/s', publicRouter);
 
   // Health check
@@ -137,6 +139,8 @@ async function main() {
     console.log('  GET    /api/gallery/sync     - Incremental sync');
     console.log('  POST   /api/gallery/sync/ack - Acknowledge sync');
     console.log('  GET    /api/gallery/stats    - Media statistics');
+    console.log('  POST   /api/healthcheck/scan - Start CDN healthcheck scan');
+    console.log('  GET    /api/healthcheck/scans - List scan history');
     console.log('  GET    /api/health         - Health check\n');
   });
   

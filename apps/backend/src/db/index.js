@@ -52,7 +52,44 @@ function initDatabase(dbPath) {
       sync_token TEXT DEFAULT NULL,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS healthcheck_scans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      scope TEXT NOT NULL DEFAULT 'all',
+      scope_id INTEGER DEFAULT NULL,
+      sample_percent INTEGER DEFAULT NULL,
+      total_parts INTEGER DEFAULT 0,
+      checked_parts INTEGER DEFAULT 0,
+      healthy_parts INTEGER DEFAULT 0,
+      unhealthy_parts INTEGER DEFAULT 0,
+      error_parts INTEGER DEFAULT 0,
+      started_at DATETIME DEFAULT NULL,
+      completed_at DATETIME DEFAULT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      error_message TEXT DEFAULT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS healthcheck_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scan_id INTEGER NOT NULL,
+      file_part_id INTEGER NOT NULL,
+      file_id INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      http_status INTEGER DEFAULT NULL,
+      response_time_ms INTEGER DEFAULT NULL,
+      checked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (scan_id) REFERENCES healthcheck_scans(id) ON DELETE CASCADE,
+      FOREIGN KEY (file_part_id) REFERENCES file_parts(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_hc_results_scan ON healthcheck_results(scan_id);
+    CREATE INDEX IF NOT EXISTS idx_hc_results_file ON healthcheck_results(file_id);
+    CREATE INDEX IF NOT EXISTS idx_hc_results_status ON healthcheck_results(status);
   `);
+
+  // Mark orphaned healthcheck scans as error (from server restart)
+  db.prepare("UPDATE healthcheck_scans SET status = 'error', error_message = 'Server restarted' WHERE status IN ('pending', 'running')").run();
 
   // ==================== MIGRATIONS ====================
   // These handle existing databases that may be missing newer columns.
@@ -545,6 +582,110 @@ function getMediaStats(userId = null) {
   };
 }
 
+// Healthcheck operations
+function createHealthcheckScan(scope, scopeId, samplePercent, totalParts) {
+  const stmt = getDb().prepare(`
+    INSERT INTO healthcheck_scans (status, scope, scope_id, sample_percent, total_parts, started_at)
+    VALUES ('running', ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `);
+  const result = stmt.run(scope, scopeId || null, samplePercent || null, totalParts);
+  return getDb().prepare('SELECT * FROM healthcheck_scans WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function updateHealthcheckScanProgress(scanId, checked, healthy, unhealthy, errorCount) {
+  getDb().prepare(`
+    UPDATE healthcheck_scans
+    SET checked_parts = ?, healthy_parts = ?, unhealthy_parts = ?, error_parts = ?
+    WHERE id = ?
+  `).run(checked, healthy, unhealthy, errorCount, scanId);
+}
+
+function completeHealthcheckScan(scanId, status, errorMessage) {
+  getDb().prepare(`
+    UPDATE healthcheck_scans
+    SET status = ?, completed_at = CURRENT_TIMESTAMP, error_message = ?
+    WHERE id = ?
+  `).run(status, errorMessage || null, scanId);
+}
+
+function insertHealthcheckResultsBatch(scanId, results) {
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT INTO healthcheck_results (scan_id, file_part_id, file_id, status, http_status, response_time_ms)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const insertMany = db.transaction((items) => {
+    for (const r of items) {
+      stmt.run(scanId, r.filePartId, r.fileId, r.status, r.httpStatus, r.responseTimeMs);
+    }
+  });
+  insertMany(results);
+}
+
+function getHealthcheckScan(scanId) {
+  return getDb().prepare('SELECT * FROM healthcheck_scans WHERE id = ?').get(scanId) || null;
+}
+
+function getHealthcheckScans(limit = 20) {
+  return getDb().prepare('SELECT * FROM healthcheck_scans ORDER BY created_at DESC LIMIT ?').all(limit);
+}
+
+function getUnhealthyFiles(scanId) {
+  return getDb().prepare(`
+    SELECT
+      hr.file_id,
+      f.original_name as file_name,
+      f.size as file_size,
+      f.total_parts,
+      COUNT(*) as missing_parts,
+      GROUP_CONCAT(fp.part_number) as missing_part_numbers
+    FROM healthcheck_results hr
+    JOIN files f ON hr.file_id = f.id
+    JOIN file_parts fp ON hr.file_part_id = fp.id
+    WHERE hr.scan_id = ? AND hr.status IN ('unhealthy', 'error')
+    GROUP BY hr.file_id
+    ORDER BY missing_parts DESC
+  `).all(scanId);
+}
+
+function getHealthcheckResultsForFile(scanId, fileId) {
+  return getDb().prepare(`
+    SELECT hr.*, fp.part_number, fp.discord_url
+    FROM healthcheck_results hr
+    JOIN file_parts fp ON hr.file_part_id = fp.id
+    WHERE hr.scan_id = ? AND hr.file_id = ?
+    ORDER BY fp.part_number
+  `).all(scanId, fileId);
+}
+
+function getAllPartsForScope(scope, scopeId, samplePercent) {
+  const db = getDb();
+  switch (scope) {
+    case 'file':
+      return db.prepare('SELECT * FROM file_parts WHERE file_id = ? ORDER BY part_number').all(scopeId);
+    case 'folder':
+      return db.prepare(`
+        SELECT fp.* FROM file_parts fp
+        JOIN files f ON fp.file_id = f.id
+        WHERE f.folder_id = ?
+        ORDER BY f.id, fp.part_number
+      `).all(scopeId);
+    case 'sample': {
+      const total = db.prepare('SELECT COUNT(*) as cnt FROM file_parts').get().cnt;
+      const limit = Math.max(1, Math.ceil(total * (samplePercent || 10) / 100));
+      return db.prepare('SELECT * FROM file_parts ORDER BY RANDOM() LIMIT ?').all(limit);
+    }
+    case 'all':
+    default:
+      return db.prepare('SELECT * FROM file_parts ORDER BY file_id, part_number').all();
+  }
+}
+
+function deleteHealthcheckScan(scanId) {
+  const result = getDb().prepare('DELETE FROM healthcheck_scans WHERE id = ?').run(scanId);
+  return result.changes > 0;
+}
+
 module.exports = {
   initDatabase,
   getDb,
@@ -609,4 +750,15 @@ module.exports = {
   updateFileThumbnail,
   getFileThumbnail,
   clearFileThumbnail,
+  // Healthcheck operations
+  createHealthcheckScan,
+  updateHealthcheckScanProgress,
+  completeHealthcheckScan,
+  insertHealthcheckResultsBatch,
+  getHealthcheckScan,
+  getHealthcheckScans,
+  getUnhealthyFiles,
+  getHealthcheckResultsForFile,
+  getAllPartsForScope,
+  deleteHealthcheckScan,
 };

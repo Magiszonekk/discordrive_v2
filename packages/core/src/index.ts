@@ -296,6 +296,16 @@ export { deriveKey, encryptChunk, generateEncryptionHeader, generateSalt } from 
 export { createDecryptionStream, deriveKeyFromHeader } from './crypto/decrypt.js';
 export { parseEncryptionHeader, isChunkedHeader, parseVectorField } from './crypto/utils.js';
 
+// Healthcheck
+export { runHealthcheck } from './healthcheck/scanner.js';
+export type {
+  HealthcheckPartInput,
+  HealthcheckPartResult,
+  HealthcheckConfig,
+  HealthcheckProgressCallback,
+  HealthcheckBatchCallback,
+} from './healthcheck/scanner.js';
+
 // Utilities
 export { withRetry } from './utils/retry.js';
 export { getPartFilename, formatFileSize, guessMimeType } from './utils/file.js';

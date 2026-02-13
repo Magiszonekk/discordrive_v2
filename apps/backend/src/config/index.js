@@ -91,6 +91,11 @@ const config = {
     key: process.env.ENCRYPTION_KEY,
     enabled: !!process.env.ENCRYPTION_KEY,
   },
+  healthcheck: {
+    concurrency: parseInt(process.env.HEALTHCHECK_CONCURRENCY, 10) || 20,
+    requestTimeoutMs: parseInt(process.env.HEALTHCHECK_REQUEST_TIMEOUT_MS, 10) || 10000,
+    batchDelayMs: parseInt(process.env.HEALTHCHECK_BATCH_DELAY_MS, 10) || 50,
+  },
 };
 
 // Validate required config

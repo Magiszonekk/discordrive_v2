@@ -433,3 +433,85 @@ export async function saveEncryptedKey(params: {
 export async function deleteEncryptedKey(): Promise<{ success: boolean; message: string }> {
   return fetchJSON("/auth/key", { method: "DELETE" });
 }
+
+// Healthcheck API
+export interface HealthcheckScanResult {
+  success: boolean;
+  scan: {
+    id: number;
+    status: string;
+    scope: string;
+    scopeId: number | null;
+    samplePercent: number | null;
+    totalParts: number;
+    checkedParts: number;
+    healthyParts: number;
+    unhealthyParts: number;
+    errorParts: number;
+    healthPercent: number;
+    startedAt: string | null;
+    completedAt: string | null;
+    createdAt: string;
+    errorMessage: string | null;
+    durationMs?: number;
+  };
+}
+
+export interface HealthcheckScanListItem {
+  id: number;
+  status: string;
+  scope: string;
+  scopeId: number | null;
+  samplePercent: number | null;
+  totalParts: number;
+  checkedParts: number;
+  healthyParts: number;
+  unhealthyParts: number;
+  errorParts: number;
+  healthPercent: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  errorMessage: string | null;
+}
+
+export interface HealthcheckUnhealthyFile {
+  fileId: number;
+  fileName: string;
+  fileSize: number;
+  totalParts: number;
+  missingParts: number;
+  missingPartNumbers: number[];
+}
+
+export async function startHealthcheckScan(params: {
+  scope: 'all' | 'folder' | 'file' | 'sample';
+  scopeId?: number;
+  samplePercent?: number;
+  concurrency?: number;
+}): Promise<{ success: boolean; scanId: number; totalParts: number }> {
+  return fetchJSON("/healthcheck/scan", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export async function getHealthcheckScan(scanId: number): Promise<HealthcheckScanResult> {
+  return fetchJSON(`/healthcheck/scan/${scanId}`);
+}
+
+export async function getHealthcheckScans(): Promise<{ success: boolean; scans: HealthcheckScanListItem[] }> {
+  return fetchJSON("/healthcheck/scans");
+}
+
+export async function cancelHealthcheckScan(scanId: number): Promise<{ success: boolean; message: string }> {
+  return fetchJSON(`/healthcheck/scan/${scanId}/cancel`, { method: "POST" });
+}
+
+export async function getUnhealthyFiles(scanId: number): Promise<{ success: boolean; files: HealthcheckUnhealthyFile[] }> {
+  return fetchJSON(`/healthcheck/scan/${scanId}/files`);
+}
+
+export async function deleteHealthcheckScan(scanId: number): Promise<{ success: boolean }> {
+  return fetchJSON(`/healthcheck/scan/${scanId}`, { method: "DELETE" });
+}

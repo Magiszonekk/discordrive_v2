@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { HardDrive, Info, LogIn, LogOut, Menu, Settings, User as UserIcon } from "lucide-react";
+import { Activity, HardDrive, Info, LogIn, LogOut, Menu, Settings, User as UserIcon } from "lucide-react";
 import { ThemeToggle } from "./ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -90,6 +90,12 @@ export function Header({ onMenuClick }: HeaderProps) {
           >
             <Settings className="h-4 w-4" />
             <span className="sr-only">Settings</span>
+          </Button>
+          <Button asChild variant="outline" size="icon" className="h-9 w-9">
+            <Link href="/health" title="CDN Healthcheck">
+              <Activity className="h-4 w-4" />
+              <span className="sr-only">CDN Healthcheck</span>
+            </Link>
           </Button>
           <Button asChild variant="outline" size="sm" className="h-9 px-3">
             <Link href="/info" className="flex items-center gap-1.5 sm:gap-2">

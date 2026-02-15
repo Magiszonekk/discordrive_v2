@@ -50,7 +50,7 @@ export class BotPool {
    */
   private async initBot(token: string, index: number): Promise<Bot> {
     const client = new Client({
-      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+      intents: [GatewayIntentBits.Guilds],
     });
 
     try {

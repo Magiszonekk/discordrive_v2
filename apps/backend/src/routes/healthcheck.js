@@ -2,7 +2,8 @@ const express = require('express');
 const { ApiError, asyncHandler } = require('../middleware/errorHandler');
 const { config } = require('../config');
 const db = require('../db');
-const { runHealthcheck } = require('@discordrive/core');
+const discord = require('../services/discord');
+const { runHealthcheck, resolvePartUrls } = require('@discordrive/core');
 
 const router = express.Router();
 
@@ -32,9 +33,16 @@ router.post('/scan', asyncHandler(async (req, res) => {
   }
 
   // Get parts to check
-  const parts = db.getAllPartsForScope(scope, scopeId || null, samplePercent || null);
+  let parts = db.getAllPartsForScope(scope, scopeId || null, samplePercent || null);
   if (parts.length === 0) {
     throw new ApiError(404, 'No file parts found for the given scope');
+  }
+
+  // Resolve fresh Discord URLs before checking health
+  try {
+    parts = await resolvePartUrls(parts, discord.getPool());
+  } catch (err) {
+    console.warn('[Healthcheck] Failed to resolve fresh URLs, proceeding with cached URLs:', err.message);
   }
 
   // Create scan record

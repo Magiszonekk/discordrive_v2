@@ -8,22 +8,29 @@ const { config } = require('../config');
 const {
   downloadPartsToFile,
   createDecryptionStream: coreCreateDecryptionStream,
+  resolvePartUrls,
 } = require('@discordrive/core');
 
-async function downloadEncryptedFileToTemp(file, prefix = 'download', onProgress) {
+async function downloadEncryptedFileToTemp(file, prefix = 'download', onProgress, botPool = null) {
   await fs.promises.mkdir(config.upload.tempDir, { recursive: true });
   const tempFile = path.join(
     config.upload.tempDir,
     `${prefix}-${file.id}-${Date.now()}-${Math.random().toString(36).slice(2)}.enc`
   );
 
+  // Resolve fresh Discord URLs if botPool is available
+  let parts = file.parts;
+  if (botPool) {
+    parts = await resolvePartUrls(parts, botPool);
+  }
+
   let fileHandle = null;
   try {
     fileHandle = await fs.promises.open(tempFile, 'w');
-    const totalEncryptedSize = file.parts.reduce((sum, part) => sum + part.size, 0);
+    const totalEncryptedSize = parts.reduce((sum, part) => sum + part.size, 0);
     await fileHandle.truncate(totalEncryptedSize);
     await downloadPartsToFile(
-      file.parts,
+      parts,
       fileHandle,
       config.upload.chunkSize,
       config.download.concurrency,
@@ -50,7 +57,8 @@ async function createDecryptionStream(tempFile, file, encryptionKey) {
 
 async function withDecryptedFileStream(file, handler, options = {}) {
   const prefix = options.prefix || 'download';
-  const tempFile = await downloadEncryptedFileToTemp(file, prefix, options.onProgress);
+  const botPool = options.botPool || null;
+  const tempFile = await downloadEncryptedFileToTemp(file, prefix, options.onProgress, botPool);
   try {
     const { stream } = await createDecryptionStream(tempFile, file, options.encryptionKey);
     await handler(stream, { tempFile });
@@ -72,6 +80,7 @@ async function appendFileToArchive(file, archive, options = {}) {
       prefix: options.prefix || 'download',
       onProgress: options.onProgress,
       encryptionKey: options.encryptionKey,
+      botPool: options.botPool || null,
     }
   );
 }

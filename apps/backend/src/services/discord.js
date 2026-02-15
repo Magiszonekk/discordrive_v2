@@ -67,6 +67,10 @@ async function sendFileBatchesParallel(batches, logger = null) {
   return getPool().sendFileBatchesParallel(batches, logger);
 }
 
+async function fetchMessage(messageId) {
+  return getPool().fetchMessage(messageId);
+}
+
 async function deleteMessage(messageId) {
   return getPool().deleteMessage(messageId);
 }
@@ -117,6 +121,7 @@ async function sendFile(buffer, filename) {
 
 module.exports = {
   initDiscord,
+  getPool,
   getChannel,
   getChannelById,
   getAllChannelIds,
@@ -129,6 +134,7 @@ module.exports = {
   sendFileBatch,
   sendFileBatchWithBot,
   sendFileBatchesParallel,
+  fetchMessage,
   deleteMessage,
   deleteMessagesBulk,
   destroyDiscord,

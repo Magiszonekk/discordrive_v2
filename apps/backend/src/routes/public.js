@@ -10,8 +10,9 @@ const db = require('../db');
 const { ApiError, asyncHandler } = require('../middleware/errorHandler');
 const { formatFileSize } = require('../utils/file');
 const { appendFileToArchive, downloadEncryptedFileToTemp, createDecryptionStream } = require('../services/storageAssembler');
-const { downloadRangeStream, resolveConfig } = require('@discordrive/core');
+const { downloadRangeStream, resolveConfig, resolvePartUrls } = require('@discordrive/core');
 const { toCoreConfig } = require('../config');
+const discord = require('../services/discord');
 
 const router = express.Router();
 const activePublicDownloads = new Map(); // token -> progress state
@@ -231,7 +232,7 @@ async function streamFileShareDownload(share, token, res) {
       percent: p.percent,
       filename: file.original_name,
     });
-  });
+  }, discord.getPool());
 
   try {
     const { stream: plainStream } = await createDecryptionStream(tempFile, file, encryptionKey);
@@ -324,6 +325,7 @@ async function streamFolderShareDownload(share, token, res) {
       await appendFileToArchive(file, archive, {
         prefix: 'share-folder',
         encryptionKey,
+        botPool: discord.getPool(),
         onProgress: (p) => {
           const base = (currentIndex - 1) / Math.max(filesWithParts.length, 1);
           const overallPercent = Math.round((base + (p.percent / 100) * (1 / Math.max(filesWithParts.length, 1))) * 100);
@@ -461,7 +463,7 @@ router.get('/:token/thumb', asyncHandler(async (req, res) => {
   const encryptionKey = await resolveShareKey(share, req);
 
   // Download and decrypt the image
-  const tempFile = await downloadEncryptedFileToTemp(file, 'share-thumb');
+  const tempFile = await downloadEncryptedFileToTemp(file, 'share-thumb', null, discord.getPool());
 
   try {
     const { stream: plainStream } = await createDecryptionStream(tempFile, file, encryptionKey);
@@ -517,7 +519,7 @@ router.get('/:token/stream', asyncHandler(async (req, res) => {
     }
 
     const coreConfig = resolveConfig(toCoreConfig());
-    const rangeStream = await downloadRangeStream(file, rangeStart, rangeEnd, coreConfig, encryptionKey);
+    const rangeStream = await downloadRangeStream(file, rangeStart, rangeEnd, coreConfig, encryptionKey, discord.getPool());
     const contentLength = rangeEnd - rangeStart + 1;
 
     res.status(206);
@@ -532,7 +534,7 @@ router.get('/:token/stream', asyncHandler(async (req, res) => {
   }
 
   // No Range header — full download
-  const tempFile = await downloadEncryptedFileToTemp(file, 'share-stream');
+  const tempFile = await downloadEncryptedFileToTemp(file, 'share-stream', null, discord.getPool());
 
   try {
     const { stream: plainStream } = await createDecryptionStream(tempFile, file, encryptionKey);

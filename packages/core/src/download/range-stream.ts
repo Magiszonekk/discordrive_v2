@@ -4,9 +4,12 @@ import os from 'os';
 import path from 'path';
 import { Readable } from 'stream';
 import type { FileRecord, FilePartRecord, ResolvedConfig } from '../types.js';
+import type { BotPool } from '../discord/bot-pool.js';
+import type { DiscordriveDatabase } from '../db/database.js';
 import { parseEncryptionHeader, isChunkedHeader, parseVectorField } from '../crypto/utils.js';
 import { deriveKeyFromHeader } from '../crypto/decrypt.js';
 import { downloadPartsToFile } from './part-downloader.js';
+import { resolvePartUrls } from './url-resolver.js';
 
 export interface ChunkRange {
   /** Index into file.parts[] for the first needed part */
@@ -86,9 +89,16 @@ export async function downloadRangeStream(
   rangeEnd: number,
   config: ResolvedConfig,
   encryptionKey: string | null,
+  botPool?: BotPool,
+  db?: DiscordriveDatabase,
 ): Promise<Readable> {
-  const parts = file.parts || [];
+  let parts = file.parts || [];
   if (parts.length === 0) throw new Error('File has no parts');
+
+  // Resolve fresh Discord URLs if botPool is available
+  if (botPool) {
+    parts = await resolvePartUrls(parts, botPool, db);
+  }
 
   const range = calculateChunkRange(rangeStart, rangeEnd, config.chunkSize, parts);
   const neededParts = parts.slice(range.firstPartIndex, range.lastPartIndex + 1);

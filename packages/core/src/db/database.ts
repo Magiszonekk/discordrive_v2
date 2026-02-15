@@ -584,6 +584,21 @@ export class DiscordriveDatabase {
     `).run(fileId);
   }
 
+  // ==================== URL CACHE ====================
+
+  /**
+   * Bulk update discord_url for file parts (URL cache refresh).
+   */
+  updatePartUrls(updates: Array<{ id: number; discordUrl: string }>): void {
+    const stmt = this.db.prepare('UPDATE file_parts SET discord_url = ? WHERE id = ?');
+    const updateAll = this.db.transaction((items: typeof updates) => {
+      for (const item of items) {
+        stmt.run(item.discordUrl, item.id);
+      }
+    });
+    updateAll(updates);
+  }
+
   // ==================== LIFECYCLE ====================
 
   close(): void {

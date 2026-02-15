@@ -468,6 +468,24 @@ export class BotPool {
   }
 
   /**
+   * Fetch a message by ID, trying all bots/channels.
+   * Returns the Discord.js Message object or null if not found.
+   */
+  async fetchMessage(messageId: string): Promise<any | null> {
+    for (const bot of this.bots) {
+      for (const channel of bot.allChannels.values()) {
+        try {
+          const message = await channel.messages.fetch(messageId);
+          return message;
+        } catch {
+          continue;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
    * Delete a single message by trying all bots/channels.
    */
   async deleteMessage(messageId: string): Promise<boolean> {

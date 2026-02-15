@@ -143,14 +143,14 @@ export class Discordrive {
    * Download a file to disk (decrypted).
    */
   async download(fileId: number, destPath: string, opts?: DownloadOptions): Promise<void> {
-    return downloadFile(fileId, destPath, { db: this.db, config: this.config }, opts);
+    return downloadFile(fileId, destPath, { db: this.db, config: this.config, botPool: this.botPool }, opts);
   }
 
   /**
    * Download a file as a Readable stream (decrypted).
    */
   async downloadStream(fileId: number, opts?: DownloadOptions): Promise<Readable> {
-    return downloadStream(fileId, { db: this.db, config: this.config }, opts);
+    return downloadStream(fileId, { db: this.db, config: this.config, botPool: this.botPool }, opts);
   }
 
   // ==================== Delete ====================
@@ -215,7 +215,7 @@ export class Discordrive {
    * ```
    */
   middleware(): any {
-    return createShareRouter({ db: this.db, config: this.config });
+    return createShareRouter({ db: this.db, config: this.config, botPool: this.botPool });
   }
 
   // ==================== Status & Lifecycle ====================
@@ -286,6 +286,7 @@ export { uploadFile } from './upload/orchestrator.js';
 export { downloadFile, downloadStream } from './download/orchestrator.js';
 export { downloadPartsToFile } from './download/part-downloader.js';
 export { calculateChunkRange, downloadRangeStream } from './download/range-stream.js';
+export { resolvePartUrls } from './download/url-resolver.js';
 
 // Share
 export { createFileShare, createFolderShare } from './share/manager.js';

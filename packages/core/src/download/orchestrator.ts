@@ -4,8 +4,10 @@ import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import type { DownloadOptions, ResolvedConfig, FileRecord } from '../types.js';
 import type { DiscordriveDatabase } from '../db/database.js';
+import type { BotPool } from '../discord/bot-pool.js';
 import { downloadPartsToFile } from './part-downloader.js';
 import { createDecryptionStream } from '../crypto/decrypt.js';
+import { resolvePartUrls } from './url-resolver.js';
 
 /**
  * Download a file to disk (decrypted).
@@ -13,7 +15,7 @@ import { createDecryptionStream } from '../crypto/decrypt.js';
 export async function downloadFile(
   fileId: number,
   destPath: string,
-  deps: { db: DiscordriveDatabase; config: ResolvedConfig },
+  deps: { db: DiscordriveDatabase; config: ResolvedConfig; botPool?: BotPool },
   options?: DownloadOptions,
 ): Promise<void> {
   const stream = await downloadStream(fileId, deps, options);
@@ -26,14 +28,19 @@ export async function downloadFile(
  */
 export async function downloadStream(
   fileId: number,
-  deps: { db: DiscordriveDatabase; config: ResolvedConfig },
+  deps: { db: DiscordriveDatabase; config: ResolvedConfig; botPool?: BotPool },
   options?: DownloadOptions,
 ): Promise<Readable> {
-  const { db, config } = deps;
+  const { db, config, botPool } = deps;
 
   const file = db.getFileById(fileId);
   if (!file) throw new Error(`File not found: ${fileId}`);
   if (!file.parts || file.parts.length === 0) throw new Error(`File has no parts: ${fileId}`);
+
+  // Resolve fresh Discord URLs if botPool is available
+  if (botPool) {
+    file.parts = await resolvePartUrls(file.parts, botPool, db);
+  }
 
   const encryptionKey = options?.encryptionKey ?? config.encryptionKey;
   const isEncrypted = !!file.encryption_header;

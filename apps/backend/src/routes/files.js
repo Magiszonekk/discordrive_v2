@@ -10,6 +10,7 @@ const discord = require('../services/discord');
 const { getPartFilename, sleep, formatFileSize } = require('../utils/file');
 const { HEADER_LENGTH, createDecipherFromHeaderAsync } = require('../utils/crypto');
 const { downloadPartsToFile } = require('../services/partDownloader');
+const { resolvePartUrls } = require('@discordrive/core');
 const { perfLogger } = require('../utils/perfLogger');
 const { hashPassword, verifyPassword } = require('../utils/password');
 
@@ -378,6 +379,14 @@ router.get('/:id', asyncHandler(async (req, res) => {
   // Verify file password if locked
   ensureFilePasswordIfRequired(req, file);
 
+  // Resolve fresh Discord URLs
+  let parts = file.parts;
+  try {
+    parts = await resolvePartUrls(parts, discord.getPool());
+  } catch (err) {
+    console.warn(`[Files] Failed to resolve fresh URLs for file ${file.id}:`, err.message);
+  }
+
   res.json({
     success: true,
     file: {
@@ -391,7 +400,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
       createdAt: file.created_at,
       encryptionHeader: file.encryption_header,
       locked: !!file.op_password_hash,
-      parts: file.parts.map(p => ({
+      parts: parts.map(p => ({
         partNumber: p.part_number,
         url: p.discord_url,
         size: p.size,
@@ -422,7 +431,11 @@ router.get('/:id/parts/:partNumber', asyncHandler(async (req, res) => {
     throw new ApiError(404, 'Part not found');
   }
 
-  const response = await fetch(part.discord_url);
+  // Resolve fresh Discord URL
+  const freshParts = await resolvePartUrls([part], discord.getPool());
+  const freshUrl = freshParts[0].discord_url;
+
+  const response = await fetch(freshUrl);
   if (!response.ok) {
     throw new ApiError(502, `Failed to fetch part ${partNumber} from Discord`);
   }
@@ -562,6 +575,9 @@ router.get('/:id/download', asyncHandler(async (req, res) => {
     throw new ApiError(500, 'Server-side download is disabled. Use client-side download.');
   }
 
+  // Resolve fresh Discord URLs
+  const freshParts = await resolvePartUrls(file.parts, discord.getPool());
+
   await fs.promises.mkdir(config.upload.tempDir, { recursive: true });
   const tempFile = path.join(
     config.upload.tempDir,
@@ -576,7 +592,7 @@ router.get('/:id/download', asyncHandler(async (req, res) => {
     }
   };
 
-  const totalEncryptedSize = file.parts.reduce((sum, p) => sum + p.size, 0);
+  const totalEncryptedSize = freshParts.reduce((sum, p) => sum + p.size, 0);
 
   // Create abort controller for cancellation
   const abortController = new AbortController();
@@ -584,7 +600,7 @@ router.get('/:id/download', asyncHandler(async (req, res) => {
   // Register download for progress tracking
   activeDownloads.set(file.id, {
     completedParts: 0,
-    totalParts: file.parts.length,
+    totalParts: freshParts.length,
     totalBytes: totalEncryptedSize,
     bytesDownloaded: 0,
     startTime: Date.now(),
@@ -608,7 +624,7 @@ router.get('/:id/download', asyncHandler(async (req, res) => {
   try {
     const concurrency = config.download.concurrency;
     const chunkSize = config.upload.chunkSize;
-    console.log(`[Download ${file.original_name}] Starting parallel download of ${file.parts.length} parts (concurrency: ${concurrency})`);
+    console.log(`[Download ${file.original_name}] Starting parallel download of ${freshParts.length} parts (concurrency: ${concurrency})`);
     const startTime = Date.now();
 
     // Open file for writing with random access
@@ -619,7 +635,7 @@ router.get('/:id/download', asyncHandler(async (req, res) => {
 
     // Download all parts directly to file
     await downloadPartsToFile(
-      file.parts,
+      freshParts,
       fileHandle,
       chunkSize,
       concurrency,
@@ -644,7 +660,7 @@ router.get('/:id/download', asyncHandler(async (req, res) => {
     fileHandle = null;
 
     const downloadTime = Date.now() - startTime;
-    console.log(`[Download ${file.original_name}] Downloaded ${file.parts.length} parts in ${downloadTime}ms`);
+    console.log(`[Download ${file.original_name}] Downloaded ${freshParts.length} parts in ${downloadTime}ms`);
 
     // Update status
     const progress = activeDownloads.get(file.id);

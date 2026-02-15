@@ -5,9 +5,11 @@ import path from 'path';
 import { pipeline } from 'stream/promises';
 import type { ResolvedConfig, ShareRecord, FileRecord, FolderRecord } from '../types.js';
 import type { DiscordriveDatabase } from '../db/database.js';
+import type { BotPool } from '../discord/bot-pool.js';
 import { formatFileSize } from '../utils/file.js';
 import { downloadPartsToFile } from '../download/part-downloader.js';
 import { createDecryptionStream } from '../crypto/decrypt.js';
+import { resolvePartUrls } from '../download/url-resolver.js';
 
 const pbkdf2Async = promisify(crypto.pbkdf2);
 
@@ -171,6 +173,8 @@ async function downloadEncryptedFileToTemp(
   prefix: string,
   config: ResolvedConfig,
   onProgress?: (p: { completedParts: number; totalParts: number; percent: number }) => void,
+  botPool?: BotPool,
+  db?: DiscordriveDatabase,
 ): Promise<string> {
   await fs.promises.mkdir(config.tempDir, { recursive: true });
   const tempFile = path.join(
@@ -178,13 +182,19 @@ async function downloadEncryptedFileToTemp(
     `${prefix}-${file.id}-${Date.now()}-${Math.random().toString(36).slice(2)}.enc`,
   );
 
+  // Resolve fresh Discord URLs if botPool is available
+  let parts = file.parts || [];
+  if (botPool) {
+    parts = await resolvePartUrls(parts, botPool, db);
+  }
+
   let fileHandle: fs.promises.FileHandle | null = null;
   try {
     fileHandle = await fs.promises.open(tempFile, 'w');
-    const totalEncryptedSize = (file.parts || []).reduce((sum, part) => sum + part.size, 0);
+    const totalEncryptedSize = parts.reduce((sum, part) => sum + part.size, 0);
     await fileHandle.truncate(totalEncryptedSize);
     await downloadPartsToFile(
-      file.parts || [],
+      parts,
       fileHandle,
       config.chunkSize,
       config.downloadConcurrency,
@@ -218,6 +228,7 @@ async function downloadEncryptedFileToTemp(
 export function createShareRouter(deps: {
   db: DiscordriveDatabase;
   config: ResolvedConfig;
+  botPool?: BotPool;
 }): any {
   // Lazy-import express to respect the optional peer dependency
   let express: any;
@@ -229,7 +240,7 @@ export function createShareRouter(deps: {
     );
   }
 
-  const { db, config } = deps;
+  const { db, config, botPool } = deps;
   const router = express.Router();
 
   function asyncHandler(fn: (req: any, res: any, next: any) => Promise<any>) {
@@ -308,7 +319,7 @@ export function createShareRouter(deps: {
     if (!file.mime_type?.startsWith('image/')) throw Object.assign(new Error('Not an image file'), { status: 404 });
 
     const encryptionKey = await resolveShareKey(share, req, config);
-    const tempFile = await downloadEncryptedFileToTemp(file, 'share-thumb', config);
+    const tempFile = await downloadEncryptedFileToTemp(file, 'share-thumb', config, undefined, botPool, db);
 
     try {
       const { stream: plainStream } = await createDecryptionStream(tempFile, file, encryptionKey);
@@ -334,7 +345,7 @@ export function createShareRouter(deps: {
     }
 
     const encryptionKey = await resolveShareKey(share, req, config);
-    const tempFile = await downloadEncryptedFileToTemp(file, 'share-stream', config);
+    const tempFile = await downloadEncryptedFileToTemp(file, 'share-stream', config, undefined, botPool, db);
 
     try {
       const { stream: plainStream } = await createDecryptionStream(tempFile, file, encryptionKey);
@@ -400,7 +411,7 @@ export function createShareRouter(deps: {
         percent: p.percent,
         filename: file.original_name,
       });
-    });
+    }, botPool, db);
 
     try {
       const { stream: plainStream } = await createDecryptionStream(tempFile, file, encryptionKey);

@@ -50,7 +50,7 @@ export class BotPool {
    */
   private async initBot(token: string, index: number): Promise<Bot> {
     const client = new Client({
-      intents: [GatewayIntentBits.Guilds],
+      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
     });
 
     try {
@@ -472,17 +472,50 @@ export class BotPool {
    * Returns the Discord.js Message object or null if not found.
    */
   async fetchMessage(messageId: string): Promise<any | null> {
+    let foundMessage: any = null;
+
     for (const bot of this.bots) {
       for (const channel of bot.allChannels.values()) {
         try {
           const message = await channel.messages.fetch(messageId);
-          return message;
+          // If message has attachments, return immediately
+          if (message.attachments.size > 0) {
+            return message;
+          }
+          // Found message but no attachments — save and try to find the author bot
+          if (!foundMessage) {
+            foundMessage = message;
+          }
+          break; // No need to try other channels for the same bot
         } catch {
           continue;
         }
       }
+      if (foundMessage) break;
     }
-    return null;
+
+    if (!foundMessage) return null;
+
+    // Message found but 0 attachments — likely a MESSAGE_CONTENT intent issue.
+    // Try re-fetching with the bot that authored the message (bots can always
+    // see their own message attachments regardless of intents).
+    const authorId = foundMessage.author?.id;
+    if (authorId) {
+      for (const bot of this.bots) {
+        if (bot.client.user?.id === authorId) {
+          for (const channel of bot.allChannels.values()) {
+            try {
+              const msg = await channel.messages.fetch(messageId);
+              if (msg.attachments.size > 0) return msg;
+            } catch { continue; }
+          }
+          break;
+        }
+      }
+    }
+
+    // Return the original message (may have 0 attachments if intent is missing)
+    return foundMessage;
   }
 
   /**

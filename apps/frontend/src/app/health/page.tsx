@@ -104,7 +104,8 @@ function ActiveScanPanel({ scanId }: { scanId: number }) {
     );
   }
 
-  const isRunning = progress.status === "running" || progress.type === "progress";
+  const isResolvingUrls = progress.status === "resolving_urls";
+  const isRunning = progress.status === "running" || progress.status === "resolving_urls" || progress.type === "progress";
   const isDone = ["completed", "cancelled", "error"].includes(progress.status) ||
     ["completed", "cancelled", "error"].includes(progress.type);
 
@@ -116,6 +117,11 @@ function ActiveScanPanel({ scanId }: { scanId: number }) {
             <>
               <StatusIcon status={progress.status || progress.type} />
               Scan {progress.status || progress.type}
+            </>
+          ) : isResolvingUrls ? (
+            <>
+              <Loader2 className="size-5 text-yellow-500 animate-spin" />
+              Resolving Discord URLs...
             </>
           ) : (
             <>
@@ -451,7 +457,7 @@ export default function HealthPage() {
   const [selectedScanId, setSelectedScanId] = useState<number | null>(null);
 
   const scans = scansData?.scans || [];
-  const runningScan = scans.find((s) => s.status === "running");
+  const runningScan = scans.find((s) => s.status === "running" || s.status === "resolving_urls");
   const currentActiveScanId = activeScanId || runningScan?.id || null;
 
   const handleStartScan = async (scope: "all" | "sample", samplePercent?: number) => {

@@ -53,24 +53,13 @@ router.post('/scan', asyncHandler(async (req, res) => {
     throw new ApiError(404, 'No file parts found for the given scope');
   }
 
-  // Resolve fresh Discord URLs before checking health
-  let urlResolutionStatus = 'resolved';
-  let urlResolutionError = null;
-  try {
-    parts = await resolvePartUrls(parts, discord.getPool(), undefined, { graceful: true });
-  } catch (err) {
-    urlResolutionStatus = 'fallback_cached';
-    urlResolutionError = err.message;
-    console.warn('[Healthcheck] Failed to resolve fresh URLs, proceeding with cached URLs:', err.message);
-  }
-
   // Create scan record
   const scan = db.createHealthcheckScan(scope, scopeId || null, samplePercent || null, parts.length);
 
   // Set up in-memory progress tracking
   const scanState = {
     scanId: scan.id,
-    status: 'running',
+    status: 'resolving_urls',
     totalParts: parts.length,
     checkedParts: 0,
     healthyParts: 0,
@@ -81,14 +70,22 @@ router.post('/scan', asyncHandler(async (req, res) => {
   };
   activeScans.set(scan.id, scanState);
 
-  // Respond immediately
+  // Respond immediately — URL resolution + scan run asynchronously
   res.json({
     success: true,
     scanId: scan.id,
     totalParts: parts.length,
-    urlResolutionStatus,
-    urlResolutionError,
   });
+
+  // Resolve fresh Discord URLs before checking health (async, after response)
+  try {
+    parts = await resolvePartUrls(parts, discord.getPool(), undefined, { graceful: true });
+    console.log(`[Healthcheck] URL resolution complete for scan ${scan.id}`);
+  } catch (err) {
+    console.warn('[Healthcheck] Failed to resolve fresh URLs, proceeding with cached URLs:', err.message);
+  }
+
+  scanState.status = 'running';
 
   // Run scan asynchronously
   const scanConcurrency = concurrency || config.healthcheck.concurrency;

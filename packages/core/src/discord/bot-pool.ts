@@ -491,7 +491,6 @@ export class BotPool {
           continue;
         }
       }
-      if (foundMessage) break;
     }
 
     if (!foundMessage) return null;

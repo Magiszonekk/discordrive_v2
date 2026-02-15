@@ -28,8 +28,10 @@ export async function resolvePartUrls(
   parts: FilePartRecord[],
   botPool: BotPool,
   db?: DiscordriveDatabase,
+  options?: { graceful?: boolean },
 ): Promise<FilePartRecord[]> {
   if (parts.length === 0) return parts;
+  const graceful = options?.graceful ?? false;
 
   // Group parts by message_id
   const messageGroups = new Map<string, FilePartRecord[]>();
@@ -45,8 +47,21 @@ export async function resolvePartUrls(
   const updatedParts = new Map<number, FilePartRecord>();
 
   for (const [messageId, groupParts] of messageGroups) {
-    const message = await botPool.fetchMessage(messageId);
+    let message: any;
+    try {
+      message = await botPool.fetchMessage(messageId);
+    } catch (err: any) {
+      if (graceful) {
+        console.warn(`[Discordrive] Graceful: failed to fetch message ${messageId}: ${err.message}`);
+        continue;
+      }
+      throw err;
+    }
     if (!message) {
+      if (graceful) {
+        console.warn(`[Discordrive] Graceful: message ${messageId} not found, skipping ${groupParts.length} parts`);
+        continue;
+      }
       throw new Error(`Failed to fetch Discord message ${messageId} — file data may have been deleted from Discord`);
     }
 
@@ -68,6 +83,10 @@ export async function resolvePartUrls(
       }
 
       if (!freshAttachment) {
+        if (graceful) {
+          console.warn(`[Discordrive] Graceful: cannot map part ${part.part_number} (file ${part.file_id}) to attachment in message ${messageId}`);
+          continue;
+        }
         throw new Error(
           `Cannot map part ${part.part_number} (file ${part.file_id}) to attachment in message ${messageId}`,
         );

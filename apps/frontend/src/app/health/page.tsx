@@ -345,6 +345,18 @@ function DiagnosePanel() {
                       <span>Cached URL{r.cachedUrlCheck.httpStatus ? ` (HTTP ${r.cachedUrlCheck.httpStatus})` : r.cachedUrlCheck.error ? `: ${r.cachedUrlCheck.error}` : ""}</span>
                     </div>
                   </div>
+                  {r.urlResolution.freshUrl && (
+                    <div className="mt-1 pl-1">
+                      <a
+                        href={r.urlResolution.freshUrl as string}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-400 hover:text-blue-300 underline break-all"
+                      >
+                        Download fresh URL
+                      </a>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

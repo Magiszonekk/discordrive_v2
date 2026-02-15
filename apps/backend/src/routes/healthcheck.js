@@ -57,7 +57,7 @@ router.post('/scan', asyncHandler(async (req, res) => {
   let urlResolutionStatus = 'resolved';
   let urlResolutionError = null;
   try {
-    parts = await resolvePartUrls(parts, discord.getPool());
+    parts = await resolvePartUrls(parts, discord.getPool(), undefined, { graceful: true });
   } catch (err) {
     urlResolutionStatus = 'fallback_cached';
     urlResolutionError = err.message;

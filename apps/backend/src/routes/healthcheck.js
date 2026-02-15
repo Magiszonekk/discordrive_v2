@@ -11,6 +11,21 @@ const router = express.Router();
 const activeScans = new Map();
 
 /**
+ * Extract attachment filename from a Discord CDN URL.
+ */
+function extractFilenameFromUrl(url) {
+  try {
+    const pathname = new URL(url).pathname;
+    const segments = pathname.split('/');
+    return decodeURIComponent(segments[segments.length - 1]);
+  } catch {
+    const withoutQuery = url.split('?')[0];
+    const segments = withoutQuery.split('/');
+    return decodeURIComponent(segments[segments.length - 1]);
+  }
+}
+
+/**
  * POST /scan - Start a new healthcheck scan
  */
 router.post('/scan', asyncHandler(async (req, res) => {
@@ -39,9 +54,13 @@ router.post('/scan', asyncHandler(async (req, res) => {
   }
 
   // Resolve fresh Discord URLs before checking health
+  let urlResolutionStatus = 'resolved';
+  let urlResolutionError = null;
   try {
     parts = await resolvePartUrls(parts, discord.getPool());
   } catch (err) {
+    urlResolutionStatus = 'fallback_cached';
+    urlResolutionError = err.message;
     console.warn('[Healthcheck] Failed to resolve fresh URLs, proceeding with cached URLs:', err.message);
   }
 
@@ -67,6 +86,8 @@ router.post('/scan', asyncHandler(async (req, res) => {
     success: true,
     scanId: scan.id,
     totalParts: parts.length,
+    urlResolutionStatus,
+    urlResolutionError,
   });
 
   // Run scan asynchronously
@@ -260,6 +281,7 @@ router.get('/scan/:id', asyncHandler(async (req, res) => {
   }
 
   const checkedParts = scan.checked_parts || 0;
+  const httpStatusDistribution = db.getHttpStatusDistribution(scanId);
   res.json({
     success: true,
     scan: {
@@ -280,6 +302,11 @@ router.get('/scan/:id', asyncHandler(async (req, res) => {
       completedAt: scan.completed_at,
       createdAt: scan.created_at,
       errorMessage: scan.error_message,
+      httpStatusDistribution: httpStatusDistribution.map(d => ({
+        httpStatus: d.http_status,
+        status: d.status,
+        count: d.count,
+      })),
     },
   });
 }));
@@ -375,6 +402,115 @@ router.delete('/scan/:id', asyncHandler(async (req, res) => {
   }
 
   res.json({ success: true });
+}));
+
+/**
+ * POST /diagnose - Run layered diagnostic to determine why parts are unhealthy
+ */
+router.post('/diagnose', asyncHandler(async (req, res) => {
+  const { sampleSize = 5, fileId } = req.body;
+  const limit = Math.min(Math.max(1, sampleSize), 20);
+
+  // Get sample parts
+  let parts;
+  if (fileId) {
+    const file = db.getFileById(fileId);
+    if (!file) throw new ApiError(404, 'File not found');
+    parts = (file.parts || []).slice(0, limit);
+  } else {
+    parts = db.getSampleParts(limit);
+  }
+
+  if (parts.length === 0) {
+    throw new ApiError(404, 'No file parts found');
+  }
+
+  const results = [];
+  for (const part of parts) {
+    const diag = {
+      partId: part.id,
+      fileId: part.file_id,
+      partNumber: part.part_number,
+      messageId: part.message_id,
+      // Layer 1: Can we fetch the Discord message?
+      messageFetch: { success: false, error: null, attachmentCount: 0 },
+      // Layer 2: Did we get a fresh URL?
+      urlResolution: { success: false, freshUrl: null, error: null },
+      // Layer 3: Does the fresh URL respond to HEAD?
+      freshUrlCheck: { success: false, httpStatus: null, error: null },
+      // Layer 4: Does the cached/old URL respond to HEAD?
+      cachedUrlCheck: { success: false, httpStatus: null, error: null },
+    };
+
+    // Layer 1: Fetch Discord message
+    try {
+      const message = await discord.fetchMessage(part.message_id);
+      if (message) {
+        const attachments = Array.from(message.attachments.values());
+        diag.messageFetch = { success: true, error: null, attachmentCount: attachments.length };
+
+        // Layer 2: Try to match attachment
+        const filename = extractFilenameFromUrl(part.discord_url);
+        const match = attachments.find(a => a.name === filename);
+        if (match) {
+          diag.urlResolution = { success: true, freshUrl: match.url, error: null };
+        } else if (attachments.length > 0) {
+          diag.urlResolution = { success: true, freshUrl: attachments[0].url, error: 'matched by index, not filename' };
+        } else {
+          diag.urlResolution = { success: false, freshUrl: null, error: 'message has 0 attachments' };
+        }
+      } else {
+        diag.messageFetch = { success: false, error: 'message not found (null)', attachmentCount: 0 };
+      }
+    } catch (err) {
+      diag.messageFetch = { success: false, error: err.message, attachmentCount: 0 };
+    }
+
+    // Layer 3: HEAD on fresh URL (if resolved)
+    if (diag.urlResolution.freshUrl) {
+      try {
+        const resp = await fetch(diag.urlResolution.freshUrl, { method: 'HEAD', signal: AbortSignal.timeout(10000) });
+        diag.freshUrlCheck = { success: resp.ok, httpStatus: resp.status, error: null };
+      } catch (err) {
+        diag.freshUrlCheck = { success: false, httpStatus: null, error: err.message };
+      }
+    }
+
+    // Layer 4: HEAD on cached URL
+    try {
+      const resp = await fetch(part.discord_url, { method: 'HEAD', signal: AbortSignal.timeout(10000) });
+      diag.cachedUrlCheck = { success: resp.ok, httpStatus: resp.status, error: null };
+    } catch (err) {
+      diag.cachedUrlCheck = { success: false, httpStatus: null, error: err.message };
+    }
+
+    results.push(diag);
+  }
+
+  // Summary
+  const summary = {
+    totalSampled: results.length,
+    messagesFound: results.filter(r => r.messageFetch.success).length,
+    urlsResolved: results.filter(r => r.urlResolution.success).length,
+    freshUrlsHealthy: results.filter(r => r.freshUrlCheck.success).length,
+    cachedUrlsHealthy: results.filter(r => r.cachedUrlCheck.success).length,
+  };
+
+  // Automated diagnosis
+  let diagnosis;
+  if (summary.messagesFound === 0) {
+    diagnosis = 'MESSAGES_DELETED — Discord messages not found. Data may have been deleted from Discord, or bots lack channel access.';
+  } else if (summary.messagesFound > 0 && summary.urlsResolved === 0) {
+    diagnosis = 'ATTACHMENTS_MISSING — Messages exist but have no attachments. Files may have been stripped.';
+  } else if (summary.urlsResolved > 0 && summary.freshUrlsHealthy === 0) {
+    diagnosis = 'FRESH_URLS_FAILING — Resolved fresh URLs but HEAD requests fail. Possible Discord CDN issue or rate limiting.';
+  } else if (summary.freshUrlsHealthy > 0) {
+    diagnosis = 'FILES_OK — Files are accessible via Discord. Previous healthcheck may have used expired cached URLs.';
+  } else {
+    diagnosis = 'MIXED — Some files accessible, some not. Run a full scan with URL resolution for details.';
+  }
+
+  res.json({ success: true, diagnosis, summary, results });
 }));
 
 module.exports = router;

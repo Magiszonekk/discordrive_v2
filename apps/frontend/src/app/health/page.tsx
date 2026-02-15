@@ -25,6 +25,8 @@ import {
   FileWarning,
   ChevronDown,
   ChevronRight,
+  Stethoscope,
+  Loader2,
 } from "lucide-react";
 import {
   useHealthcheckScans,
@@ -33,8 +35,9 @@ import {
   useCancelScan,
   useDeleteScan,
   useUnhealthyFiles,
+  useDiagnose,
 } from "@/hooks/useHealthcheck";
-import type { HealthcheckScanListItem, HealthcheckUnhealthyFile } from "@/lib/api";
+import type { HealthcheckScanListItem, HealthcheckUnhealthyFile, DiagnoseResponse } from "@/lib/api";
 
 function formatDuration(ms: number | null | undefined): string {
   if (!ms) return "-";
@@ -232,6 +235,126 @@ function UnhealthyFilesList({ scanId }: { scanId: number }) {
   );
 }
 
+// Diagnose panel
+function DiagnosePanel() {
+  const diagnose = useDiagnose();
+  const [result, setResult] = useState<DiagnoseResponse | null>(null);
+
+  const handleDiagnose = async () => {
+    try {
+      const data = await diagnose.mutateAsync({ sampleSize: 5 });
+      setResult(data);
+    } catch {
+      // error handled by mutation
+    }
+  };
+
+  const diagnosisColor = (diagnosis: string) => {
+    if (diagnosis.startsWith("FILES_OK")) return "text-green-500";
+    if (diagnosis.startsWith("MIXED")) return "text-yellow-500";
+    return "text-red-500";
+  };
+
+  const layerIcon = (success: boolean) =>
+    success ? <CheckCircle2 className="size-4 text-green-500 shrink-0" /> : <XCircle className="size-4 text-red-500 shrink-0" />;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Stethoscope className="size-5" />
+          Diagnose
+        </CardTitle>
+        <CardDescription>
+          Test a small sample of parts through each layer (Discord API, URL resolution, HTTP check) to pinpoint failures.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <Button
+          onClick={handleDiagnose}
+          disabled={diagnose.isPending}
+          variant="outline"
+        >
+          {diagnose.isPending ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Stethoscope className="size-4" />
+          )}
+          {diagnose.isPending ? "Diagnosing..." : "Run Diagnostic"}
+        </Button>
+
+        {diagnose.isError && (
+          <div className="text-sm text-red-500">
+            {(diagnose.error as Error)?.message || "Diagnostic failed"}
+          </div>
+        )}
+
+        {result && (
+          <div className="space-y-4">
+            {/* Diagnosis */}
+            <div className={`text-sm font-semibold ${diagnosisColor(result.diagnosis)}`}>
+              {result.diagnosis}
+            </div>
+
+            {/* Summary */}
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-sm">
+              <div className="text-center">
+                <div className="text-muted-foreground">Sampled</div>
+                <div className="text-lg font-semibold">{result.summary.totalSampled}</div>
+              </div>
+              <div className="text-center">
+                <div className="text-muted-foreground">Messages Found</div>
+                <div className="text-lg font-semibold">{result.summary.messagesFound}</div>
+              </div>
+              <div className="text-center">
+                <div className="text-muted-foreground">URLs Resolved</div>
+                <div className="text-lg font-semibold">{result.summary.urlsResolved}</div>
+              </div>
+              <div className="text-center">
+                <div className="text-muted-foreground">Fresh URLs OK</div>
+                <div className="text-lg font-semibold text-green-500">{result.summary.freshUrlsHealthy}</div>
+              </div>
+              <div className="text-center">
+                <div className="text-muted-foreground">Cached URLs OK</div>
+                <div className="text-lg font-semibold">{result.summary.cachedUrlsHealthy}</div>
+              </div>
+            </div>
+
+            {/* Per-part results */}
+            <div className="space-y-2">
+              {result.results.map((r, i) => (
+                <div key={i} className="border rounded-lg p-3 text-sm space-y-1">
+                  <div className="font-medium text-muted-foreground">
+                    Part #{r.partNumber} (file {r.fileId}, msg {r.messageId})
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                    <div className="flex items-center gap-2">
+                      {layerIcon(r.messageFetch.success)}
+                      <span>Message fetch{r.messageFetch.success ? ` (${r.messageFetch.attachmentCount} attachments)` : `: ${r.messageFetch.error}`}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {layerIcon(r.urlResolution.success)}
+                      <span>URL resolution{!r.urlResolution.success && r.urlResolution.error ? `: ${r.urlResolution.error}` : ""}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {layerIcon(r.freshUrlCheck.success)}
+                      <span>Fresh URL{r.freshUrlCheck.httpStatus ? ` (HTTP ${r.freshUrlCheck.httpStatus})` : r.freshUrlCheck.error ? `: ${r.freshUrlCheck.error}` : ": n/a"}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {layerIcon(r.cachedUrlCheck.success)}
+                      <span>Cached URL{r.cachedUrlCheck.httpStatus ? ` (HTTP ${r.cachedUrlCheck.httpStatus})` : r.cachedUrlCheck.error ? `: ${r.cachedUrlCheck.error}` : ""}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // Scan history table
 function ScanHistory({
   scans,
@@ -386,6 +509,9 @@ export default function HealthPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* Diagnose Panel */}
+        <DiagnosePanel />
 
         {/* Active Scan Progress */}
         {currentActiveScanId && (

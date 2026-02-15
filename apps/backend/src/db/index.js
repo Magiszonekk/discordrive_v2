@@ -681,6 +681,20 @@ function getAllPartsForScope(scope, scopeId, samplePercent) {
   }
 }
 
+function getHttpStatusDistribution(scanId) {
+  return getDb().prepare(`
+    SELECT http_status, status, COUNT(*) as count
+    FROM healthcheck_results
+    WHERE scan_id = ?
+    GROUP BY http_status, status
+    ORDER BY count DESC
+  `).all(scanId);
+}
+
+function getSampleParts(limit = 5) {
+  return getDb().prepare('SELECT * FROM file_parts ORDER BY RANDOM() LIMIT ?').all(limit);
+}
+
 function deleteHealthcheckScan(scanId) {
   const result = getDb().prepare('DELETE FROM healthcheck_scans WHERE id = ?').run(scanId);
   return result.changes > 0;
@@ -761,4 +775,6 @@ module.exports = {
   getHealthcheckResultsForFile,
   getAllPartsForScope,
   deleteHealthcheckScan,
+  getHttpStatusDistribution,
+  getSampleParts,
 };

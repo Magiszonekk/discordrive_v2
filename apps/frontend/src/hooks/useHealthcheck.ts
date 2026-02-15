@@ -133,3 +133,9 @@ export function useDeleteScan() {
     },
   });
 }
+
+export function useDiagnose() {
+  return useMutation({
+    mutationFn: (params?: { sampleSize?: number; fileId?: number }) => api.runDiagnose(params),
+  });
+}

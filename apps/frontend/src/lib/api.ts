@@ -515,3 +515,44 @@ export async function getUnhealthyFiles(scanId: number): Promise<{ success: bool
 export async function deleteHealthcheckScan(scanId: number): Promise<{ success: boolean }> {
   return fetchJSON(`/healthcheck/scan/${scanId}`, { method: "DELETE" });
 }
+
+export interface DiagnoseLayerResult {
+  success: boolean;
+  error: string | null;
+  attachmentCount?: number;
+  freshUrl?: string | null;
+  httpStatus?: number | null;
+}
+
+export interface DiagnosePartResult {
+  partId: number;
+  fileId: number;
+  partNumber: number;
+  messageId: string;
+  messageFetch: DiagnoseLayerResult;
+  urlResolution: DiagnoseLayerResult;
+  freshUrlCheck: DiagnoseLayerResult;
+  cachedUrlCheck: DiagnoseLayerResult;
+}
+
+export interface DiagnoseSummary {
+  totalSampled: number;
+  messagesFound: number;
+  urlsResolved: number;
+  freshUrlsHealthy: number;
+  cachedUrlsHealthy: number;
+}
+
+export interface DiagnoseResponse {
+  success: boolean;
+  diagnosis: string;
+  summary: DiagnoseSummary;
+  results: DiagnosePartResult[];
+}
+
+export async function runDiagnose(params?: { sampleSize?: number; fileId?: number }): Promise<DiagnoseResponse> {
+  return fetchJSON("/healthcheck/diagnose", {
+    method: "POST",
+    body: JSON.stringify(params || {}),
+  });
+}

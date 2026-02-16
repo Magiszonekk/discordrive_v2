@@ -230,6 +230,80 @@ export class DiscordriveDatabase {
     }
   }
 
+  getFilesPaginated(
+    folderId?: number | null,
+    userId?: number | null,
+    includeUnowned: boolean = false,
+    limit: number = 50,
+    offset: number = 0,
+  ): FileRecord[] {
+    const ownsClause = (() => {
+      if (userId != null) {
+        return includeUnowned
+          ? '(f.user_id = @userId OR f.user_id IS NULL)'
+          : 'f.user_id = @userId';
+      }
+      return 'f.user_id IS NULL';
+    })();
+
+    if (folderId === undefined || folderId === null) {
+      return this.db.prepare(`
+        SELECT f.*,
+               GROUP_CONCAT(fp.discord_url, '|') as urls,
+               GROUP_CONCAT(fp.message_id, '|') as message_ids
+        FROM files f
+        LEFT JOIN file_parts fp ON f.id = fp.file_id
+        WHERE f.folder_id IS NULL
+          AND ${ownsClause}
+        GROUP BY f.id
+        ORDER BY f.sort_order ASC, f.created_at DESC
+        LIMIT @limit OFFSET @offset
+      `).all({ userId, limit, offset }) as FileRecord[];
+    } else {
+      return this.db.prepare(`
+        SELECT f.*,
+               GROUP_CONCAT(fp.discord_url, '|') as urls,
+               GROUP_CONCAT(fp.message_id, '|') as message_ids
+        FROM files f
+        LEFT JOIN file_parts fp ON f.id = fp.file_id
+        WHERE f.folder_id = @folderId
+          AND ${ownsClause}
+        GROUP BY f.id
+        ORDER BY f.sort_order ASC, f.created_at DESC
+        LIMIT @limit OFFSET @offset
+      `).all({ folderId, userId, limit, offset }) as FileRecord[];
+    }
+  }
+
+  countFiles(
+    folderId?: number | null,
+    userId?: number | null,
+    includeUnowned: boolean = false,
+  ): number {
+    const ownsClause = (() => {
+      if (userId != null) {
+        return includeUnowned
+          ? '(f.user_id = @userId OR f.user_id IS NULL)'
+          : 'f.user_id = @userId';
+      }
+      return 'f.user_id IS NULL';
+    })();
+
+    if (folderId === undefined || folderId === null) {
+      const result = this.db.prepare(`
+        SELECT COUNT(*) as total FROM files f
+        WHERE f.folder_id IS NULL AND ${ownsClause}
+      `).get({ userId }) as { total: number };
+      return result.total;
+    } else {
+      const result = this.db.prepare(`
+        SELECT COUNT(*) as total FROM files f
+        WHERE f.folder_id = @folderId AND ${ownsClause}
+      `).get({ folderId, userId }) as { total: number };
+      return result.total;
+    }
+  }
+
   getFileById(id: number): FileRecord | null {
     const file = this.db.prepare('SELECT * FROM files WHERE id = ?').get(id) as FileRecord | undefined;
     if (!file) return null;

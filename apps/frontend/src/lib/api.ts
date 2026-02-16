@@ -30,9 +30,18 @@ async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 // Files API
-export async function getFiles(folderId?: number | null): Promise<FilesResponse> {
-  const params = folderId !== undefined && folderId !== null ? `?folderId=${folderId}` : "";
-  return fetchJSON<FilesResponse>(`/files${params}`);
+export async function getFiles(
+  folderId?: number | null,
+  page: number = 1,
+  limit: number = 50,
+): Promise<FilesResponse> {
+  const params = new URLSearchParams();
+  if (folderId !== undefined && folderId !== null) {
+    params.set("folderId", String(folderId));
+  }
+  params.set("page", String(page));
+  params.set("limit", String(limit));
+  return fetchJSON<FilesResponse>(`/files?${params.toString()}`);
 }
 
 export async function getFileInfo(id: number) {

@@ -99,15 +99,25 @@ const memoryUpload = multer({
  *   - folderId: get files in specific folder (use "null" or omit for root)
  */
 router.get('/', asyncHandler(async (req, res) => {
-  const { folderId } = req.query;
+  const { folderId, page, limit: limitParam } = req.query;
 
   // Parse folderId - null means root level
   const parsedFolderId = folderId === undefined || folderId === 'null' || folderId === ''
     ? null
     : parseInt(folderId, 10);
 
-  const files = db.getAllFiles(parsedFolderId, req.user?.id || null, !req.user);
-  const folders = db.getAllFolders(req.user?.id || null, !req.user);
+  // Parse pagination params
+  const limit = Math.min(Math.max(1, parseInt(limitParam, 10) || 50), 200);
+  const currentPage = Math.max(1, parseInt(page, 10) || 1);
+  const offset = (currentPage - 1) * limit;
+
+  const userId = req.user?.id || null;
+  const includeUnowned = !req.user;
+
+  const files = db.getFilesPaginated(parsedFolderId, userId, includeUnowned, limit, offset);
+  const totalCount = db.countFiles(parsedFolderId, userId, includeUnowned);
+  const totalPages = Math.ceil(totalCount / limit) || 1;
+  const folders = db.getAllFolders(userId, includeUnowned);
 
   const formattedFiles = files.map(file => ({
     id: file.id,
@@ -132,6 +142,10 @@ router.get('/', asyncHandler(async (req, res) => {
     files: formattedFiles,
     folders: folders,
     currentFolderId: parsedFolderId,
+    totalCount,
+    page: currentPage,
+    totalPages,
+    limit,
   });
 }));
 

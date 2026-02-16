@@ -240,6 +240,14 @@ function getAllFiles(folderId = null, userId = null, includeUnowned = false) {
   return getCoreDb().getAllFiles(folderId, userId, includeUnowned);
 }
 
+function getFilesPaginated(folderId = null, userId = null, includeUnowned = false, limit = 50, offset = 0) {
+  return getCoreDb().getFilesPaginated(folderId, userId, includeUnowned, limit, offset);
+}
+
+function countFiles(folderId = null, userId = null, includeUnowned = false) {
+  return getCoreDb().countFiles(folderId, userId, includeUnowned);
+}
+
 function getFileById(id) {
   return getCoreDb().getFileById(id);
 }
@@ -706,6 +714,8 @@ module.exports = {
   insertFile,
   insertFilePart,
   getAllFiles,
+  getFilesPaginated,
+  countFiles,
   getFileById,
   getFileByName,
   deleteFile,

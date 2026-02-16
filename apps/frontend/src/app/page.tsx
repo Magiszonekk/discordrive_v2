@@ -25,15 +25,18 @@ import { sortableKeyboardCoordinates, arrayMove } from "@dnd-kit/sortable";
 import { toast } from "sonner";
 import { ShareDialog } from "@/components/shares/ShareDialog";
 import { FolderDownloadDialog } from "@/components/folders/FolderDownloadDialog";
-import { Download, Share2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, Share2 } from "lucide-react";
+
+const PAGE_SIZE = 50;
 
 export default function HomePage() {
   const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
   const [folderShareOpen, setFolderShareOpen] = useState(false);
   const [folderDownloadOpen, setFolderDownloadOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const filesQuery = useFiles(currentFolderId);
+  const filesQuery = useFiles(currentFolderId, currentPage, PAGE_SIZE);
   const foldersQuery = useFolders();
   const updateFile = useUpdateFile();
   const deleteFile = useDeleteFile();
@@ -42,6 +45,13 @@ export default function HomePage() {
 
   const files = useMemo(() => filesQuery.data?.files ?? [], [filesQuery.data]);
   const folders = useMemo(() => foldersQuery.data ?? [], [foldersQuery.data]);
+  const totalCount = filesQuery.data?.totalCount ?? 0;
+  const totalPages = filesQuery.data?.totalPages ?? 1;
+
+  const handleFolderSelect = useCallback((folderId: number | null) => {
+    setCurrentFolderId(folderId);
+    setCurrentPage(1);
+  }, []);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -144,7 +154,7 @@ export default function HomePage() {
             folders={folders}
             isLoading={foldersQuery.isLoading}
             currentFolderId={currentFolderId}
-            onFolderSelect={setCurrentFolderId}
+            onFolderSelect={handleFolderSelect}
             onClose={() => setMobileMenuOpen(false)}
           />
         </SheetContent>
@@ -158,7 +168,7 @@ export default function HomePage() {
               folders={folders}
               isLoading={foldersQuery.isLoading}
               currentFolderId={currentFolderId}
-              onFolderSelect={setCurrentFolderId}
+              onFolderSelect={handleFolderSelect}
             />
           </div>
 
@@ -204,7 +214,7 @@ export default function HomePage() {
                       </>
                     )}
                     <div className="text-xs sm:text-sm text-muted-foreground">
-                      {files.length} file{files.length === 1 ? "" : "s"}
+                      {totalCount} file{totalCount === 1 ? "" : "s"}
                     </div>
                   </div>
                 </div>
@@ -218,6 +228,34 @@ export default function HomePage() {
                   onDeleteFile={handleFileDelete}
                   onReorderFiles={handleFileReorder}
                 />
+
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-between pt-4 mt-4 border-t">
+                    <div className="text-xs sm:text-sm text-muted-foreground">
+                      Strona {currentPage} z {totalPages}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={currentPage <= 1}
+                        onClick={() => setCurrentPage(p => p - 1)}
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                        Poprzednia
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={currentPage >= totalPages}
+                        onClick={() => setCurrentPage(p => p + 1)}
+                      >
+                        Nastepna
+                        <ChevronRight className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </section>
             </div>
           </main>

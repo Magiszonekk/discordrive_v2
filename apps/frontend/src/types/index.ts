@@ -41,6 +41,10 @@ export interface FilesResponse {
   files: FileItem[];
   folders: Folder[];
   currentFolderId: number | null;
+  totalCount: number;
+  page: number;
+  totalPages: number;
+  limit: number;
 }
 
 export interface FolderContentsResponse {

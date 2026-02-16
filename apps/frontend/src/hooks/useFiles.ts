@@ -3,10 +3,10 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as api from "@/lib/api";
 
-export function useFiles(folderId?: number | null) {
+export function useFiles(folderId?: number | null, page: number = 1, limit: number = 50) {
   return useQuery({
-    queryKey: ["files", folderId ?? "root"],
-    queryFn: () => api.getFiles(folderId),
+    queryKey: ["files", folderId ?? "root", page, limit],
+    queryFn: () => api.getFiles(folderId, page, limit),
   });
 }
 

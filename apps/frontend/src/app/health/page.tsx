@@ -37,6 +37,7 @@ import {
   useUnhealthyFiles,
   useDiagnose,
 } from "@/hooks/useHealthcheck";
+import type { HealthcheckProgress } from "@/hooks/useHealthcheck";
 import type { HealthcheckScanListItem, HealthcheckUnhealthyFile, DiagnoseResponse } from "@/lib/api";
 
 function formatDuration(ms: number | null | undefined): string {
@@ -87,8 +88,7 @@ function HealthPercent({ percent }: { percent: number }) {
 }
 
 // Active scan progress panel
-function ActiveScanPanel({ scanId }: { scanId: number }) {
-  const { progress } = useHealthcheckProgress(scanId);
+function ActiveScanPanel({ scanId, progress }: { scanId: number; progress: HealthcheckProgress | null }) {
   const cancelScan = useCancelScan();
 
   if (!progress) {
@@ -108,6 +108,10 @@ function ActiveScanPanel({ scanId }: { scanId: number }) {
   const isRunning = progress.status === "running" || progress.status === "resolving_urls" || progress.type === "progress";
   const isDone = ["completed", "cancelled", "error"].includes(progress.status) ||
     ["completed", "cancelled", "error"].includes(progress.type);
+
+  const healthPercent = progress.checkedParts > 0
+    ? Math.round((progress.healthyParts / progress.checkedParts) * 10000) / 100
+    : 0;
 
   return (
     <Card>
@@ -136,6 +140,16 @@ function ActiveScanPanel({ scanId }: { scanId: number }) {
       </CardHeader>
       <CardContent className="space-y-4">
         <Progress value={progress.percent} className="h-3" />
+
+        {progress.checkedParts > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground text-sm">Health:</span>
+            <HealthPercent percent={healthPercent} />
+            <span className="text-xs text-muted-foreground">
+              ({progress.healthyParts}/{progress.checkedParts} checked)
+            </span>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
           <div>
@@ -178,9 +192,9 @@ function ActiveScanPanel({ scanId }: { scanId: number }) {
   );
 }
 
-// Unhealthy files list for a completed scan
-function UnhealthyFilesList({ scanId }: { scanId: number }) {
-  const { data, isLoading } = useUnhealthyFiles(scanId);
+// Unhealthy files list (works both during and after scan)
+function UnhealthyFilesList({ scanId, refetchInterval }: { scanId: number; refetchInterval?: number }) {
+  const { data, isLoading } = useUnhealthyFiles(scanId, { refetchInterval });
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
   if (isLoading) return <div className="text-sm text-muted-foreground">Loading results...</div>;
@@ -450,6 +464,22 @@ function ScanHistory({
   );
 }
 
+// Live unhealthy files shown during active scan with polling
+function LiveUnhealthyFiles({ scanId, unhealthyCount, isRunning }: {
+  scanId: number;
+  unhealthyCount: number;
+  isRunning: boolean;
+}) {
+  if (unhealthyCount === 0) return null;
+
+  return (
+    <UnhealthyFilesList
+      scanId={scanId}
+      refetchInterval={isRunning ? 5000 : undefined}
+    />
+  );
+}
+
 export default function HealthPage() {
   const { data: scansData, isLoading } = useHealthcheckScans();
   const startScan = useStartScan();
@@ -459,6 +489,14 @@ export default function HealthPage() {
   const scans = scansData?.scans || [];
   const runningScan = scans.find((s) => s.status === "running" || s.status === "resolving_urls");
   const currentActiveScanId = activeScanId || runningScan?.id || null;
+
+  // Lift SSE progress to parent to avoid duplicate connections
+  const { progress: activeProgress } = useHealthcheckProgress(currentActiveScanId);
+
+  const isActiveScanRunning = activeProgress
+    ? !["completed", "cancelled", "error"].includes(activeProgress.status) &&
+      !["completed", "cancelled", "error"].includes(activeProgress.type)
+    : false;
 
   const handleStartScan = async (scope: "all" | "sample", samplePercent?: number) => {
     try {
@@ -533,11 +571,20 @@ export default function HealthPage() {
 
         {/* Active Scan Progress */}
         {currentActiveScanId && (
-          <ActiveScanPanel scanId={currentActiveScanId} />
+          <ActiveScanPanel scanId={currentActiveScanId} progress={activeProgress} />
         )}
 
-        {/* Results for selected scan */}
-        {viewScan && viewScan.status === "completed" && viewScan.unhealthyParts > 0 && (
+        {/* Live unhealthy files during active scan */}
+        {currentActiveScanId && (
+          <LiveUnhealthyFiles
+            scanId={currentActiveScanId}
+            unhealthyCount={activeProgress?.unhealthyParts ?? 0}
+            isRunning={isActiveScanRunning}
+          />
+        )}
+
+        {/* Results for selected completed scan (when no active scan) */}
+        {!currentActiveScanId && viewScan && viewScan.status === "completed" && viewScan.unhealthyParts > 0 && (
           <UnhealthyFilesList scanId={viewScan.id} />
         )}
 

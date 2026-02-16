@@ -21,11 +21,15 @@ export function useHealthcheckScan(scanId: number | null) {
   });
 }
 
-export function useUnhealthyFiles(scanId: number | null) {
+export function useUnhealthyFiles(
+  scanId: number | null,
+  options?: { refetchInterval?: number },
+) {
   return useQuery({
     queryKey: ["healthcheck-files", scanId],
     queryFn: () => api.getUnhealthyFiles(scanId!),
     enabled: scanId !== null,
+    refetchInterval: options?.refetchInterval,
   });
 }
 

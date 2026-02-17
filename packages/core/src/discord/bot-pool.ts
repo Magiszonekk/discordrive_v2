@@ -2,6 +2,9 @@ import type { BotPoolConfig, Bot, ChunkInput, UploadedChunk } from '../types.js'
 import { Client, GatewayIntentBits, AttachmentBuilder } from 'discord.js';
 import { withRetry } from '../utils/retry.js';
 import { sleep } from '../utils/file.js';
+import { SocksProxyAgent } from 'socks-proxy-agent';
+import { HttpProxyAgent } from 'http-proxy-agent';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 export class BotPool {
   private bots: Bot[] = [];
@@ -28,6 +31,11 @@ export class BotPool {
    * Bots are distributed across channels: first N bots -> channel 1, next N -> channel 2, etc.
    */
   private getUploadChannelIdForBot(botIndex: number): string {
+    // In multi-instance mode, all bots upload to the same override channel
+    if (this.config.uploadChannelOverride) {
+      return this.config.uploadChannelOverride;
+    }
+
     const channelIds = this.config.channelIds;
     const botsPerChannel = this.config.botsPerChannel;
 
@@ -49,9 +57,67 @@ export class BotPool {
    * Each bot gets an upload channel assigned, but fetches ALL channels for downloads.
    */
   private async initBot(token: string, index: number): Promise<Bot> {
-    const client = new Client({
+    const clientOptions: any = {
       intents: [GatewayIntentBits.Guilds],
-    });
+    };
+
+    // Determine proxy for this bot (round-robin distribution)
+    let proxyUrl: string | undefined;
+    if (this.config.proxies && this.config.proxies.length > 0) {
+      // Create proxy pool: [direct, ...proxies]
+      const proxyPool = ['direct', ...this.config.proxies];
+
+      // Round-robin distribution
+      const proxyIndex = index % proxyPool.length;
+      const selectedProxy = proxyPool[proxyIndex];
+
+      if (selectedProxy !== 'direct') {
+        try {
+          // Parse proxy URL to determine type
+          const url = new URL(selectedProxy);
+
+          // If the proxy points to localhost, skip setting a REST agent.
+          // The process likely runs under proxychains which already routes all
+          // traffic through this same address. Setting SocksProxyAgent on top
+          // would cause proxychains to intercept the agent's connect() call and
+          // route it through itself → self-referential loop → connection failure.
+          const isLocalhost =
+            url.hostname === '127.0.0.1' ||
+            url.hostname === 'localhost' ||
+            url.hostname === '::1';
+
+          if (isLocalhost) {
+            proxyUrl = selectedProxy;
+            console.warn(
+              `[BotPool] Bot ${index + 1}: Proxy ${selectedProxy} points to localhost — skipping REST agent (proxychains handles routing)`,
+            );
+          } else {
+            let agent: any;
+
+            if (url.protocol.startsWith('socks')) {
+              agent = new SocksProxyAgent(selectedProxy);
+            } else if (url.protocol === 'http:') {
+              agent = new HttpProxyAgent(selectedProxy);
+            } else if (url.protocol === 'https:') {
+              agent = new HttpsProxyAgent(selectedProxy);
+            } else {
+              throw new Error(`Unsupported proxy protocol: ${url.protocol}`);
+            }
+
+            clientOptions.rest = { agent };
+            proxyUrl = selectedProxy;
+            console.log(`[BotPool] Bot ${index + 1}: Using proxy ${selectedProxy}`);
+          }
+        } catch (err: any) {
+          console.warn(`[BotPool] Bot ${index + 1}: Failed to configure proxy ${selectedProxy}: ${err.message}`);
+          console.warn(`[BotPool] Bot ${index + 1}: Falling back to direct connection`);
+        }
+      } else {
+        console.log(`[BotPool] Bot ${index + 1}: Using direct connection (no proxy)`);
+      }
+    }
+
+    const client = new Client(clientOptions);
 
     try {
       await client.login(token);
@@ -109,6 +175,7 @@ export class BotPool {
       name: `Bot-${index + 1} (${client.user!.tag})`,
       botIndex: index,
       uploadChannelId,
+      proxyUrl,
     };
   }
 
@@ -120,15 +187,16 @@ export class BotPool {
       const bot = await this.initBot(token, index);
       this.bots.push(bot);
       this.botsInitialized++;
+      const proxyInfo = bot.proxyUrl ? ` via proxy ${bot.proxyUrl}` : ' (direct)';
       console.log(
-        `[Discordrive] Bot ${index + 1} ready: ${bot.name} -> Channel ${bot.uploadChannelId} (${this.bots.length}/${this.totalConfiguredBots} active)`,
+        `[Discordrive] ✅ Bot ${index + 1} ready: ${bot.name} -> Channel ${bot.uploadChannelId}${proxyInfo} (${this.bots.length}/${this.totalConfiguredBots} active)`,
       );
     } catch (err: any) {
       if (retriesLeft > 0) {
         console.warn(
           `[Discordrive] Bot ${index + 1} failed (${err.message}), retrying... (${retriesLeft} attempts left)`,
         );
-        await sleep(5000); // Wait 5s before retry
+        await sleep(10000);
         return this.initBotWithRetry(token, index, retriesLeft - 1);
       } else {
         this.botsFailed++;
@@ -151,8 +219,8 @@ export class BotPool {
       // Start bot initialization with retry logic
       promises.push(this.initBotWithRetry(token, index, maxRetries));
 
-      // Small delay between starting each bot to avoid rate limits
-      await sleep(500);
+      // Delay between starting each bot - Discord Gateway allows ~1 IDENTIFY per 5s
+      await sleep(5500);
     }
 
     // Wait for ALL bots to finish initializing (success or fail)
@@ -195,11 +263,17 @@ export class BotPool {
     const botsPerChannel = this.config.botsPerChannel;
 
     console.log(`[Discordrive] Starting initialization of ${tokens.length} bot(s)...`);
-    console.log(`[Discordrive] Multi-channel mode: ${channelCount} channel(s), ${botsPerChannel} bots per channel`);
-    for (let i = 0; i < this.allChannelIds.length; i++) {
-      const startBot = i * botsPerChannel + 1;
-      const endBot = Math.min((i + 1) * botsPerChannel, tokens.length);
-      console.log(`[Discordrive]   Channel ${i + 1} (${this.allChannelIds[i]}): Bots ${startBot}-${endBot}`);
+    if (this.config.uploadChannelOverride) {
+      console.log(`[Discordrive] Multi-instance mode: all ${tokens.length} bots → upload channel ${this.config.uploadChannelOverride} (read access to ${channelCount} channel(s))`);
+    } else {
+      console.log(`[Discordrive] Multi-channel mode: ${channelCount} channel(s), ${botsPerChannel} bots per channel`);
+      for (let i = 0; i < this.allChannelIds.length; i++) {
+        const startBot = i * botsPerChannel + 1;
+        const endBot = Math.min((i + 1) * botsPerChannel, tokens.length);
+        if (startBot <= endBot) {
+          console.log(`[Discordrive]   Channel ${i + 1} (${this.allChannelIds[i]}): Bots ${startBot}-${endBot}`);
+        }
+      }
     }
 
     // Load all bots and wait for completion
@@ -338,6 +412,7 @@ export class BotPool {
             url: attachmentData.url,
             size: attachmentData.size,
             partIndex: chunk.partIndex,
+            channelId: bot.uploadChannelId,
           };
         });
       }, `sendFileBatch[${bot.name}](${chunks.length} attachments)`);
@@ -470,50 +545,94 @@ export class BotPool {
   /**
    * Fetch a message by ID, trying all bots/channels.
    * Returns the Discord.js Message object or null if not found.
+   * @param messageId - Discord message ID
+   * @param channelId - (Optional) Known channel ID for direct lookup (stored in DB)
    */
-  async fetchMessage(messageId: string): Promise<any | null> {
+  async fetchMessage(messageId: string, channelId?: string): Promise<any | null> {
     let foundMessage: any = null;
+    let foundChannelId: string | null = null;
 
-    for (const bot of this.bots) {
-      for (const channel of bot.allChannels.values()) {
+    // FAST PATH: If channel_id is known (stored in DB), target that channel directly
+    // This eliminates "Unknown Message" spam and improves performance
+    if (channelId) {
+      for (const bot of this.bots) {
+        const channel = bot.allChannels.get(channelId);
+        if (!channel) continue;
         try {
-          const message = await channel.messages.fetch(messageId);
-          // If message has attachments, return immediately
+          const message = await channel.messages.fetch(messageId, { force: true });
           if (message.attachments.size > 0) {
             return message;
           }
-          // Found message but no attachments — save and try to find the author bot
           if (!foundMessage) {
             foundMessage = message;
+            foundChannelId = channelId;
           }
-          break; // No need to try other channels for the same bot
-        } catch {
-          continue;
+        } catch (err: any) {
+          console.warn(
+            `[BotPool] fetchMessage(${messageId}) failed on ${bot.name} channel ${channelId}: ${err?.message ?? err}`,
+          );
+          // Continue to next bot with same channel — network/rate-limit retry
+        }
+      }
+      // If fast path found message with attachments, return early
+      if (foundMessage?.attachments.size > 0) return foundMessage;
+      // Else fall through to slow path (backward compat for records with null channel_id)
+    }
+
+    // SLOW PATH: Try all channels (backward compat for old records with no channel_id)
+    // Try each unique channel only once per *successful* response.
+    // If a bot throws (network error, rate limit), another bot with a different
+    // proxy should still be allowed to retry the same channel.
+    const succeededChannels = new Set<string>();
+    for (const bot of this.bots) {
+      for (const [chanId, channel] of bot.allChannels.entries()) {
+        if (succeededChannels.has(chanId)) continue;
+        try {
+          const message = await channel.messages.fetch(messageId, { force: true });
+          succeededChannels.add(chanId); // mark only on success
+          if (message.attachments.size > 0) {
+            return message;
+          }
+          if (!foundMessage) {
+            foundMessage = message;
+            foundChannelId = chanId;
+          }
+        } catch (err: any) {
+          console.warn(
+            `[BotPool] fetchMessage(${messageId}) failed on ${bot.name} channel ${chanId}: ${err?.message ?? err}`,
+          );
+          continue; // network/rate-limit error — let next bot retry this channel
         }
       }
     }
 
     if (!foundMessage) return null;
 
-    // Message found but 0 attachments — likely a MESSAGE_CONTENT intent issue.
-    // Try re-fetching with the bot that authored the message (bots can always
-    // see their own message attachments regardless of intents).
-    const authorId = foundMessage.author?.id;
-    if (authorId) {
-      for (const bot of this.bots) {
-        if (bot.client.user?.id === authorId) {
-          for (const channel of bot.allChannels.values()) {
-            try {
-              const msg = await channel.messages.fetch(messageId);
-              if (msg.attachments.size > 0) return msg;
-            } catch { continue; }
-          }
-          break;
-        }
+    // Message found but 0 attachments — likely a cache or MESSAGE_CONTENT issue.
+    // Strategy:
+    // 1. Try the bot that authored the message first (it can always see its own attachments)
+    // 2. If author bot doesn't have the channel in allChannels, fall back to any bot that does
+    if (foundChannelId) {
+      const authorId = foundMessage.author?.id;
+
+      // Author bot first, then all others — preserves original intent while adding fallback
+      const botsToTry = authorId
+        ? [
+            ...this.bots.filter(b => b.client.user?.id === authorId),
+            ...this.bots.filter(b => b.client.user?.id !== authorId),
+          ]
+        : this.bots;
+
+      for (const bot of botsToTry) {
+        const channel = bot.allChannels.get(foundChannelId);
+        if (!channel) continue;
+        try {
+          const msg = await channel.messages.fetch(messageId, { force: true });
+          if (msg.attachments.size > 0) return msg;
+        } catch { /* ignore */ }
       }
     }
 
-    // Return the original message (may have 0 attachments if intent is missing)
     return foundMessage;
   }
 
@@ -581,6 +700,35 @@ export class BotPool {
     if (remaining.length > 0) {
       console.warn(`[Discordrive] Could not delete ${remaining.length} message(s)`);
     }
+  }
+
+  /**
+   * Pin a message by ID, trying all bots/channels.
+   * Returns success status with error code if applicable.
+   */
+  async pinMessage(messageId: string): Promise<{ success: boolean; error?: string }> {
+    for (const bot of this.bots) {
+      for (const channel of bot.allChannels.values()) {
+        try {
+          const message = await channel.messages.fetch(messageId);
+          if (message.pinned) {
+            return { success: true, error: 'already_pinned' };
+          }
+          await message.pin();
+          return { success: true };
+        } catch (error: any) {
+          // Discord error codes
+          if (error.code === 50013) {
+            throw new Error('Bot lacks MANAGE_MESSAGES permission in this channel');
+          }
+          if (error.code === 30003) {
+            throw new Error('Channel has reached maximum pin limit (50)');
+          }
+          continue; // Try next channel
+        }
+      }
+    }
+    return { success: false, error: 'message_not_found' };
   }
 
   /**

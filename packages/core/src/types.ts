@@ -51,6 +51,8 @@ export interface BotPoolConfig {
   channelIds: string[];
   botsPerChannel: number;
   botInitRetries: number;
+  proxies?: string[];
+  uploadChannelOverride?: string; // Force all bots to upload to this channel (multi-instance mode)
 }
 
 export interface Bot {
@@ -62,6 +64,7 @@ export interface Bot {
   name: string;
   botIndex: number;
   uploadChannelId: string;
+  proxyUrl?: string;
 }
 
 export interface ChunkInput {
@@ -75,6 +78,7 @@ export interface UploadedChunk {
   url: string;
   size: number;
   partIndex: number;
+  channelId: string;
 }
 
 // ==================== Database Records ====================
@@ -118,6 +122,7 @@ export interface FilePartRecord {
   plain_size: number | null;
   iv: string | null;
   auth_tag: string | null;
+  channel_id: string | null;
 }
 
 export interface FolderRecord {
@@ -170,6 +175,7 @@ export interface InsertFilePartExtra {
   plainSize?: number | null;
   iv?: string | null;
   authTag?: string | null;
+  channelId?: string | null;
 }
 
 export interface CreateShareOptions {

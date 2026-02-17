@@ -62,6 +62,18 @@ async function main() {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
+  // Internal: local-only message fetch for sibling instances (no auth, no forwarding to avoid loops)
+  const { asyncHandler } = require('./middleware/errorHandler');
+  const discord = require('./services/discord');
+  app.post('/api/internal/message', asyncHandler(async (req, res) => {
+    const { messageId } = req.body;
+    if (!messageId) return res.json({ found: false });
+    const message = await discord.fetchMessageLocal(messageId);
+    if (!message) return res.json({ found: false });
+    const attachments = Array.from(message.attachments.values()).map(a => ({ url: a.url, name: a.name }));
+    res.json({ found: true, attachments });
+  }));
+
   // Storage stats
   app.get('/api/stats', (req, res) => {
     const { getStorageStats } = require('./db');

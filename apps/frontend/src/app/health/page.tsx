@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { Label } from "@/components/ui/label";
 import {
   ArrowLeft,
   Activity,
@@ -27,7 +28,9 @@ import {
   ChevronRight,
   Stethoscope,
   Loader2,
+  Pin,
 } from "lucide-react";
+import { toast } from "sonner";
 import {
   useHealthcheckScans,
   useHealthcheckProgress,
@@ -36,6 +39,8 @@ import {
   useDeleteScan,
   useUnhealthyFiles,
   useDiagnose,
+  usePinMessage,
+  useUnpinAllMessages,
 } from "@/hooks/useHealthcheck";
 import type { HealthcheckProgress } from "@/hooks/useHealthcheck";
 import type { HealthcheckScanListItem, HealthcheckUnhealthyFile, DiagnoseResponse } from "@/lib/api";
@@ -126,6 +131,11 @@ function ActiveScanPanel({ scanId, progress }: { scanId: number; progress: Healt
             <>
               <Loader2 className="size-5 text-yellow-500 animate-spin" />
               Resolving Discord URLs...
+              {progress.totalMessages > 0 && (
+                <span className="text-sm font-normal text-muted-foreground">
+                  ({progress.resolvedMessages}/{progress.totalMessages} messages)
+                </span>
+              )}
             </>
           ) : (
             <>
@@ -135,11 +145,20 @@ function ActiveScanPanel({ scanId, progress }: { scanId: number; progress: Healt
           )}
         </CardTitle>
         <CardDescription>
-          {progress.checkedParts} / {progress.totalParts} chunks checked
+          {isResolvingUrls
+            ? progress.totalMessages > 0
+              ? `Resolving ${progress.resolvedMessages}/${progress.totalMessages} messages...`
+              : "Preparing URL resolution..."
+            : `${progress.checkedParts} / ${progress.totalParts} chunks checked`}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <Progress value={progress.percent} className="h-3" />
+        <Progress
+          value={isResolvingUrls && progress.totalMessages > 0
+            ? Math.round((progress.resolvedMessages / progress.totalMessages) * 100)
+            : progress.percent}
+          className="h-3"
+        />
 
         {progress.checkedParts > 0 && (
           <div className="flex items-center gap-2">
@@ -258,7 +277,10 @@ function UnhealthyFilesList({ scanId, refetchInterval }: { scanId: number; refet
 // Diagnose panel
 function DiagnosePanel() {
   const diagnose = useDiagnose();
+  const pinMessage = usePinMessage();
+  const unpinAllMessages = useUnpinAllMessages();
   const [result, setResult] = useState<DiagnoseResponse | null>(null);
+  const [pinningMessageId, setPinningMessageId] = useState<string | null>(null);
 
   const handleDiagnose = async () => {
     try {
@@ -266,6 +288,43 @@ function DiagnosePanel() {
       setResult(data);
     } catch {
       // error handled by mutation
+    }
+  };
+
+  const handlePinMessage = async (messageId: string) => {
+    setPinningMessageId(messageId);
+    try {
+      const response = await pinMessage.mutateAsync(messageId);
+      if (response.alreadyPinned) {
+        toast.info('Message was already pinned in Discord');
+      } else {
+        toast.success('Message pinned in Discord - check your Discord channel');
+      }
+    } catch (error: any) {
+      const errorMsg = error?.message || 'Failed to pin message';
+      if (errorMsg.includes('MANAGE_MESSAGES')) {
+        toast.error('Bot lacks permission to pin messages. Grant MANAGE_MESSAGES permission.');
+      } else if (errorMsg.includes('maximum pin limit')) {
+        toast.warning('Channel pin limit reached (50). Unpin some messages first.');
+      } else if (errorMsg.includes('not found')) {
+        toast.error('Message not found in Discord channels');
+      } else {
+        toast.error(errorMsg);
+      }
+    } finally {
+      setPinningMessageId(null);
+    }
+  };
+
+  const handleUnpinAllMessages = async () => {
+    try {
+      const response = await unpinAllMessages.mutateAsync();
+      toast.success(response.message);
+      if (response.errors.length > 0) {
+        toast.warning(`${response.errors.length} errors occurred while unpinning`);
+      }
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to unpin all messages');
     }
   };
 
@@ -290,18 +349,32 @@ function DiagnosePanel() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <Button
-          onClick={handleDiagnose}
-          disabled={diagnose.isPending}
-          variant="outline"
-        >
-          {diagnose.isPending ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <Stethoscope className="size-4" />
-          )}
-          {diagnose.isPending ? "Diagnosing..." : "Run Diagnostic"}
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            onClick={handleDiagnose}
+            disabled={diagnose.isPending}
+            variant="outline"
+          >
+            {diagnose.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Stethoscope className="size-4" />
+            )}
+            {diagnose.isPending ? "Diagnosing..." : "Run Diagnostic"}
+          </Button>
+          <Button
+            onClick={handleUnpinAllMessages}
+            disabled={unpinAllMessages.isPending}
+            variant="destructive"
+          >
+            {unpinAllMessages.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Pin className="size-4" />
+            )}
+            {unpinAllMessages.isPending ? "Unpinning..." : "Unpin All Messages"}
+          </Button>
+        </div>
 
         {diagnose.isError && (
           <div className="text-sm text-red-500">
@@ -342,43 +415,66 @@ function DiagnosePanel() {
 
             {/* Per-part results */}
             <div className="space-y-2">
-              {result.results.map((r, i) => (
-                <div key={i} className="border rounded-lg p-3 text-sm space-y-1">
-                  <div className="font-medium text-muted-foreground">
-                    Part #{r.partNumber} (file {r.fileId}, msg {r.messageId})
+              {result.results.map((r, i) => {
+                const showPinButton = !r.urlResolution.success && r.messageFetch.success;
+                const isPinning = pinningMessageId === r.messageId;
+
+                return (
+                  <div key={i} className="border rounded-lg p-3 text-sm space-y-1">
+                    <div className="font-medium text-muted-foreground">
+                      Part #{r.partNumber} (file {r.fileId}, msg {r.messageId})
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                      <div className="flex items-center gap-2">
+                        {layerIcon(r.messageFetch.success)}
+                        <span>Message fetch{r.messageFetch.success ? ` (${r.messageFetch.attachmentCount} attachments)` : `: ${r.messageFetch.error}`}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {layerIcon(r.urlResolution.success)}
+                        <span>URL resolution{!r.urlResolution.success && r.urlResolution.error ? `: ${r.urlResolution.error}` : ""}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {layerIcon(r.freshUrlCheck.success)}
+                        <span>Fresh URL{r.freshUrlCheck.httpStatus ? ` (HTTP ${r.freshUrlCheck.httpStatus})` : r.freshUrlCheck.error ? `: ${r.freshUrlCheck.error}` : ": n/a"}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {layerIcon(r.cachedUrlCheck.success)}
+                        <span>Cached URL{r.cachedUrlCheck.httpStatus ? ` (HTTP ${r.cachedUrlCheck.httpStatus})` : r.cachedUrlCheck.error ? `: ${r.cachedUrlCheck.error}` : ""}</span>
+                      </div>
+                    </div>
+
+                    {/* Action buttons row */}
+                    <div className="mt-2 flex gap-2 items-center">
+                      {r.urlResolution.freshUrl && (
+                        <a
+                          href={r.urlResolution.freshUrl as string}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-400 hover:text-blue-300 underline"
+                        >
+                          Download fresh URL
+                        </a>
+                      )}
+                      {showPinButton && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handlePinMessage(r.messageId)}
+                          disabled={isPinning}
+                          className="h-6 text-xs gap-1.5"
+                        >
+                          {isPinning ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <Pin className="size-3" />
+                          )}
+                          {isPinning ? 'Pinning...' : 'Pin Message'}
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-                    <div className="flex items-center gap-2">
-                      {layerIcon(r.messageFetch.success)}
-                      <span>Message fetch{r.messageFetch.success ? ` (${r.messageFetch.attachmentCount} attachments)` : `: ${r.messageFetch.error}`}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {layerIcon(r.urlResolution.success)}
-                      <span>URL resolution{!r.urlResolution.success && r.urlResolution.error ? `: ${r.urlResolution.error}` : ""}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {layerIcon(r.freshUrlCheck.success)}
-                      <span>Fresh URL{r.freshUrlCheck.httpStatus ? ` (HTTP ${r.freshUrlCheck.httpStatus})` : r.freshUrlCheck.error ? `: ${r.freshUrlCheck.error}` : ": n/a"}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {layerIcon(r.cachedUrlCheck.success)}
-                      <span>Cached URL{r.cachedUrlCheck.httpStatus ? ` (HTTP ${r.cachedUrlCheck.httpStatus})` : r.cachedUrlCheck.error ? `: ${r.cachedUrlCheck.error}` : ""}</span>
-                    </div>
-                  </div>
-                  {r.urlResolution.freshUrl && (
-                    <div className="mt-1 pl-1">
-                      <a
-                        href={r.urlResolution.freshUrl as string}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs text-blue-400 hover:text-blue-300 underline break-all"
-                      >
-                        Download fresh URL
-                      </a>
-                    </div>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -487,7 +583,7 @@ export default function HealthPage() {
   const [selectedScanId, setSelectedScanId] = useState<number | null>(null);
 
   const scans = scansData?.scans || [];
-  const runningScan = scans.find((s) => s.status === "running" || s.status === "resolving_urls");
+  const runningScan = scans.find((s) => s.status === "running");
   const currentActiveScanId = activeScanId || runningScan?.id || null;
 
   // Lift SSE progress to parent to avoid duplicate connections
@@ -543,26 +639,26 @@ export default function HealthPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-3">
-            <Button
-              onClick={() => handleStartScan("sample", 5)}
-              disabled={!!currentActiveScanId || startScan.isPending}
-            >
-              <Zap className="size-4" />
-              Quick Check (5%)
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => handleStartScan("all")}
-              disabled={!!currentActiveScanId || startScan.isPending}
-            >
-              <Play className="size-4" />
-              Full Scan
-            </Button>
-            {startScan.isError && (
-              <div className="text-sm text-red-500 self-center">
-                {(startScan.error as Error)?.message || "Failed to start scan"}
-              </div>
-            )}
+              <Button
+                onClick={() => handleStartScan("sample", 5)}
+                disabled={!!currentActiveScanId || startScan.isPending}
+              >
+                <Zap className="size-4" />
+                Quick Check (5%)
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => handleStartScan("all")}
+                disabled={!!currentActiveScanId || startScan.isPending}
+              >
+                <Play className="size-4" />
+                Full Scan
+              </Button>
+              {startScan.isError && (
+                <div className="text-sm text-red-500 self-center">
+                  {(startScan.error as Error)?.message || "Failed to start scan"}
+                </div>
+              )}
           </CardContent>
         </Card>
 

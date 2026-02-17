@@ -1,11 +1,14 @@
 import https from 'https';
 import http from 'http';
 import { sleep } from '../utils/file.js';
+import type { BotPool } from '../discord/bot-pool.js';
+import type { DiscordriveDatabase } from '../db/database.js';
 
 export interface HealthcheckPartInput {
   id: number;
   file_id: number;
   discord_url: string;
+  channel_id?: string | null;
 }
 
 export interface HealthcheckPartResult {
@@ -110,6 +113,85 @@ async function checkPartHealth(
 }
 
 /**
+ * Extract filename from Discord CDN URL.
+ * Handles both URL object parsing and fallback string parsing.
+ */
+function extractFilenameFromUrl(url: string): string | null {
+  try {
+    const pathname = new URL(url).pathname;
+    const segments = pathname.split('/');
+    return decodeURIComponent(segments[segments.length - 1]);
+  } catch {
+    const withoutQuery = url.split('?')[0];
+    const segments = withoutQuery.split('/');
+    return decodeURIComponent(segments[segments.length - 1]);
+  }
+}
+
+/**
+ * Check a part's health with lazy URL resolution.
+ * First tries the cached URL. If it fails with 403/404/410 (likely expired),
+ * fetches the message from Discord to get a fresh URL, updates the cache,
+ * and retries the health check.
+ */
+async function checkPartHealthWithLazyResolution(
+  part: HealthcheckPartInput,
+  botPool: BotPool | undefined,
+  db: DiscordriveDatabase | undefined,
+  options: {
+    timeoutMs: number;
+    signal?: AbortSignal;
+    retries?: number;
+  },
+): Promise<HealthcheckPartResult> {
+  // Try 1: HEAD on cached URL
+  let result = await checkPartHealth(part, options.timeoutMs, options.signal, options.retries);
+
+  // If unhealthy due to expired URL (403/404/410) AND we have botPool
+  if (
+    result.status === 'unhealthy' &&
+    result.httpStatus &&
+    [403, 404, 410].includes(result.httpStatus) &&
+    botPool &&
+    db
+  ) {
+    try {
+      // Resolve fresh URL for this specific part
+      const message = await botPool.fetchMessage((part as any).message_id, (part as any).channel_id ?? undefined);
+
+      if (message && message.attachments.size > 0) {
+        // Extract fresh URL (match by filename or index)
+        const attachments = Array.from(message.attachments.values());
+        const filename = extractFilenameFromUrl(part.discord_url);
+        let attachment = attachments.find((a: any) => a.name === filename);
+        if (!attachment && attachments.length > 0) {
+          attachment = attachments[0]; // Fallback to first
+        }
+
+        if (attachment && (attachment as any).url !== part.discord_url) {
+          // Update cache IMMEDIATELY
+          await db.updatePartUrls([{
+            id: part.id,
+            discordUrl: (attachment as any).url,
+          }]);
+
+          // Create updated part object
+          const freshPart = { ...part, discord_url: (attachment as any).url };
+
+          // Retry HEAD with fresh URL
+          result = await checkPartHealth(freshPart, options.timeoutMs, options.signal, 1);
+        }
+      }
+    } catch (err) {
+      // URL resolution failed - keep original unhealthy status
+      // (This is expected for deleted files)
+    }
+  }
+
+  return result;
+}
+
+/**
  * Run healthcheck on a list of parts with concurrency control.
  * Modeled after downloadPartsToFile in part-downloader.ts.
  */
@@ -119,6 +201,8 @@ export async function runHealthcheck(
   onProgress?: HealthcheckProgressCallback,
   onBatchReady?: HealthcheckBatchCallback,
   signal?: AbortSignal,
+  botPool?: BotPool,
+  db?: DiscordriveDatabase,
 ): Promise<{ healthy: number; unhealthy: number; errors: number }> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const queue = [...parts];
@@ -162,7 +246,16 @@ export async function runHealthcheck(
       while (inFlight.size < cfg.concurrency && queue.length > 0 && !cancelled) {
         const part = queue.shift()!;
 
-        const promise = checkPartHealth(part, cfg.requestTimeoutMs, signal)
+        // Use lazy resolution if botPool and db are available, otherwise fallback
+        const checkPromise = botPool && db
+          ? checkPartHealthWithLazyResolution(part, botPool, db, {
+              timeoutMs: cfg.requestTimeoutMs,
+              signal,
+              retries: 2,
+            })
+          : checkPartHealth(part, cfg.requestTimeoutMs, signal, 2);
+
+        const promise = checkPromise
           .then((result) => {
             checked++;
 

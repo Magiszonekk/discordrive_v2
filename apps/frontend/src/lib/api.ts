@@ -565,3 +565,26 @@ export async function runDiagnose(params?: { sampleSize?: number; fileId?: numbe
     body: JSON.stringify(params || {}),
   });
 }
+
+export async function pinMessage(messageId: string): Promise<{
+  success: boolean;
+  message: string;
+  alreadyPinned?: boolean;
+}> {
+  return fetchJSON("/healthcheck/pin-message", {
+    method: "POST",
+    body: JSON.stringify({ messageId }),
+  });
+}
+
+export async function unpinAllMessages(): Promise<{
+  success: boolean;
+  message: string;
+  totalChannels: number;
+  totalUnpinned: number;
+  errors: string[];
+}> {
+  return fetchJSON("/healthcheck/unpin-all-messages", {
+    method: "POST",
+  });
+}

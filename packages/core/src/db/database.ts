@@ -73,6 +73,7 @@ export class DiscordriveDatabase {
         plain_size INTEGER DEFAULT NULL,
         iv TEXT DEFAULT NULL,
         auth_tag TEXT DEFAULT NULL,
+        channel_id TEXT NOT NULL,
         FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
         UNIQUE(file_id, part_number)
       );
@@ -118,6 +119,38 @@ export class DiscordriveDatabase {
       CREATE INDEX IF NOT EXISTS idx_shares_file_id ON shares(file_id);
       CREATE INDEX IF NOT EXISTS idx_shares_folder_id ON shares(folder_id);
     `);
+
+    // Migration: recreate file_parts with channel_id NOT NULL (deletes old data)
+    try {
+      const result = this.db.prepare(
+        "SELECT COUNT(*) as cnt FROM pragma_table_info('file_parts') WHERE name='channel_id'"
+      ).get() as { cnt: number };
+
+      if (result.cnt === 0) {
+        console.log('[Migration] Dropping old file_parts table (no channel_id) — recreating with NOT NULL constraint');
+        this.db.exec('DROP TABLE IF EXISTS file_parts');
+        // Recreate table with channel_id NOT NULL
+        this.db.exec(`
+          CREATE TABLE file_parts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id INTEGER NOT NULL,
+            part_number INTEGER NOT NULL,
+            message_id TEXT NOT NULL,
+            discord_url TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            plain_size INTEGER DEFAULT NULL,
+            iv TEXT DEFAULT NULL,
+            auth_tag TEXT DEFAULT NULL,
+            channel_id TEXT NOT NULL,
+            FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+            UNIQUE(file_id, part_number)
+          );
+          CREATE INDEX IF NOT EXISTS idx_file_parts_file_id ON file_parts(file_id);
+        `);
+      }
+    } catch (err) {
+      console.error('[Migration] Error checking file_parts schema:', err);
+    }
   }
 
   // ==================== FILE OPERATIONS ====================
@@ -172,8 +205,8 @@ export class DiscordriveDatabase {
     extra: InsertFilePartExtra = {},
   ): void {
     const stmt = this.db.prepare(`
-      INSERT INTO file_parts (file_id, part_number, message_id, discord_url, size, plain_size, iv, auth_tag)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO file_parts (file_id, part_number, message_id, discord_url, size, plain_size, iv, auth_tag, channel_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       fileId,
@@ -184,6 +217,7 @@ export class DiscordriveDatabase {
       extra.plainSize ?? null,
       extra.iv ?? null,
       extra.authTag ?? null,
+      extra.channelId ?? null,
     );
   }
 

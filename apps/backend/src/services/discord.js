@@ -1,4 +1,5 @@
 const { BotPool } = require('@discordrive/core');
+const { Collection } = require('discord.js');
 const { config } = require('../config');
 
 /** @type {BotPool | null} */
@@ -25,6 +26,8 @@ async function initDiscord() {
     channelIds: allChannelIds,
     botsPerChannel: config.discord.botsPerChannel,
     botInitRetries: config.discord.botInitRetries,
+    proxies: config.discord.proxies,
+    uploadChannelOverride: process.env.DISCORD_UPLOAD_CHANNEL_ID || undefined,
   });
 
   // Fire-and-forget: start bot initialization in background (non-blocking)
@@ -67,8 +70,39 @@ async function sendFileBatchesParallel(batches, logger = null) {
   return getPool().sendFileBatchesParallel(batches, logger);
 }
 
-async function fetchMessage(messageId) {
-  return getPool().fetchMessage(messageId);
+// Local-only fetch — NO sibling fallback (used by /api/internal/message to avoid loops)
+async function fetchMessageLocal(messageId, channelId) {
+  return getPool().fetchMessage(messageId, channelId);
+}
+
+async function fetchMessage(messageId, channelId) {
+  const message = await getPool().fetchMessage(messageId, channelId);
+  if (message) return message;
+
+  // Try sibling instances — each has bots for a different Discord channel.
+  // Uses /api/internal/message which is local-only (no re-forwarding to avoid loops).
+  const siblings = (process.env.SIBLING_INSTANCE_URLS || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+
+  for (const siblingUrl of siblings) {
+    try {
+      const resp = await fetch(`${siblingUrl}/api/internal/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageId }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      if (data.found) {
+        const fakeAttachments = new Collection();
+        (data.attachments || []).forEach((a, i) => fakeAttachments.set(String(i), { url: a.url, name: a.name }));
+        return { attachments: fakeAttachments, author: null, _fromSibling: true };
+      }
+    } catch { /* sibling unavailable, skip */ }
+  }
+
+  return null;
 }
 
 async function deleteMessage(messageId) {
@@ -77,6 +111,10 @@ async function deleteMessage(messageId) {
 
 async function deleteMessagesBulk(messageIds = []) {
   return getPool().deleteMessagesBulk(messageIds);
+}
+
+async function pinMessage(messageId) {
+  return getPool().pinMessage(messageId);
 }
 
 async function destroyDiscord() {
@@ -135,7 +173,9 @@ module.exports = {
   sendFileBatchWithBot,
   sendFileBatchesParallel,
   fetchMessage,
+  fetchMessageLocal,
   deleteMessage,
   deleteMessagesBulk,
+  pinMessage,
   destroyDiscord,
 };

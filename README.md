@@ -136,6 +136,28 @@ DISCORD_CHANNEL_2_ID=channel_2
 BOTS_PER_CHANNEL=6
 ```
 
+### Multi-instance with proxy (scale beyond Discord's 50 req/s per IP)
+
+Add SOCKS5 proxy URLs to scale upload throughput. Each proxy spawns a separate backend instance with its own bot subset.
+
+```env
+# One proxy → 2 instances (direct + proxy), bots split evenly
+DISCORD_PROXIES=socks5h://127.0.0.1:49152
+
+# Two proxies → 3 instances
+DISCORD_PROXIES=socks5h://127.0.0.1:49152,socks5h://127.0.0.1:49153
+```
+
+Requires nginx as load balancer in front of instances:
+
+```bash
+sudo ln -sf $(pwd)/apps/backend/nginx.conf /etc/nginx/sites-enabled/discordrive.conf
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl enable --now nginx
+```
+
+Set `BACKEND_URL=http://localhost:4099` in `.env` (nginx port).
+
 ## Encryption
 
 Two encryption modes:
@@ -211,6 +233,33 @@ await drive.destroy();
 - `DELETE /api/shares/:id` - Revoke share
 - `GET /s/:token` - Public share page
 - `GET /s/:token/stream` - Stream video/audio (Range support)
+
+### Healthcheck
+- `POST /api/healthcheck/scan` - Start a new healthcheck scan
+- `GET /api/healthcheck/scan/:id` - Get scan status & results
+- `GET /api/healthcheck/scan/:id/stream` - SSE stream for live scan progress
+- `DELETE /api/healthcheck/scan/:id` - Delete a scan
+- `GET /api/healthcheck/scans` - List all past scans
+- `POST /api/healthcheck/diagnose` - Run layered diagnostic on a sample of parts
+- `POST /api/healthcheck/check-message` - Diagnose a single Discord message by ID
+- `POST /api/healthcheck/pin-message` - Pin a Discord message (debug)
+- `POST /api/healthcheck/unpin-all-messages` - Unpin all messages in all channels
+- `GET /api/healthcheck/bots/status` - Status of all connected bots
+
+#### `POST /api/healthcheck/check-message`
+```json
+{ "messageId": "1471869904142598287" }
+```
+Response:
+```json
+{
+  "success": true,
+  "messageId": "1471869904142598287",
+  "messageFetch": { "success": true, "error": null, "attachmentCount": 1 },
+  "urlResolution": { "success": true, "freshUrl": "https://cdn.discordapp.com/...", "error": null },
+  "freshUrlCheck": { "success": true, "httpStatus": 200, "error": null }
+}
+```
 
 ### Other
 - `GET /api/health` - Health check

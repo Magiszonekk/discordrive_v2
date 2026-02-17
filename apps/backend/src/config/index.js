@@ -1,7 +1,10 @@
 const path = require('path');
 
 // Load .env from monorepo root (2 levels up from apps/backend/src)
-require('dotenv').config({ path: path.resolve(__dirname, '..', '..', '..', '..', '.env') });
+// Skip when SKIP_DOTENV is set (used by multi-instance manager)
+if (!process.env.SKIP_DOTENV) {
+  require('dotenv').config({ path: path.resolve(__dirname, '..', '..', '..', '..', '.env') });
+}
 
 // Data directory is in apps/backend/data
 const projectTempDir = path.resolve(__dirname, '..', '..', 'data', 'temp');
@@ -55,6 +58,18 @@ function getDiscordChannelIds() {
   return channels;
 }
 
+// Parse comma-separated proxy URLs from env (DISCORD_PROXIES)
+function getDiscordProxies() {
+  const proxiesEnv = process.env.DISCORD_PROXIES;
+  if (!proxiesEnv || !proxiesEnv.trim()) {
+    return [];
+  }
+  return proxiesEnv
+    .split(',')
+    .map(p => p.trim())
+    .filter(p => p.length > 0);
+}
+
 // Default chunk size: ~8MB (safe for Discord's 25MB bot limit with overhead)
 const DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024 - 1024;
 
@@ -66,6 +81,7 @@ const config = {
     channelIds: getDiscordChannelIds(), // All channels for multi-channel support
     botsPerChannel: parseInt(process.env.BOTS_PER_CHANNEL, 10) || 5, // Bots assigned per channel for uploads
     botInitRetries: parseInt(process.env.BOT_INIT_RETRIES, 10) || 2,
+    proxies: getDiscordProxies(), // Proxy URLs for rate limit distribution
   },
   server: {
     port: parseInt(process.env.PORT, 10) || 3000,

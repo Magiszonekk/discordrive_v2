@@ -307,6 +307,7 @@ router.post('/:id/chunks', memoryUpload.any(), asyncHandler(async (req, res) => 
       iv: chunkInfo.iv,
       authTag: chunkInfo.authTag,
       plainSize: chunkInfo.plainSize,
+      channelId: result.channelId,
     });
     recordSentPart(fileId, result.messageId);
   }

@@ -28,10 +28,12 @@ export async function resolvePartUrls(
   parts: FilePartRecord[],
   botPool: BotPool,
   db?: DiscordriveDatabase,
-  options?: { graceful?: boolean },
+  options?: { graceful?: boolean; concurrency?: number; onProgress?: (resolved: number, total: number) => void },
 ): Promise<FilePartRecord[]> {
   if (parts.length === 0) return parts;
   const graceful = options?.graceful ?? false;
+  const concurrency = options?.concurrency ?? 10;
+  const onProgress = options?.onProgress;
 
   // Group parts by message_id
   const messageGroups = new Map<string, FilePartRecord[]>();
@@ -45,22 +47,30 @@ export async function resolvePartUrls(
   }
 
   const updatedParts = new Map<number, FilePartRecord>();
+  const entries = [...messageGroups.entries()];
+  const totalMessages = entries.length;
+  let resolvedMessages = 0;
 
-  for (const [messageId, groupParts] of messageGroups) {
+  // Process a single message group
+  const processGroup = async ([messageId, groupParts]: [string, FilePartRecord[]]) => {
     let message: any;
     try {
       message = await botPool.fetchMessage(messageId);
     } catch (err: any) {
       if (graceful) {
         console.warn(`[Discordrive] Graceful: failed to fetch message ${messageId}: ${err.message}`);
-        continue;
+        resolvedMessages++;
+        onProgress?.(resolvedMessages, totalMessages);
+        return;
       }
       throw err;
     }
     if (!message) {
       if (graceful) {
         console.warn(`[Discordrive] Graceful: message ${messageId} not found, skipping ${groupParts.length} parts`);
-        continue;
+        resolvedMessages++;
+        onProgress?.(resolvedMessages, totalMessages);
+        return;
       }
       throw new Error(`Failed to fetch Discord message ${messageId} — file data may have been deleted from Discord`);
     }
@@ -94,6 +104,33 @@ export async function resolvePartUrls(
 
       updatedParts.set(part.id, { ...part, discord_url: freshAttachment.url });
     }
+
+    resolvedMessages++;
+    onProgress?.(resolvedMessages, totalMessages);
+  };
+
+  // Process message groups concurrently
+  const queue = [...entries];
+  const inFlight = new Set<Promise<void>>();
+
+  const startNext = () => {
+    while (inFlight.size < concurrency && queue.length > 0) {
+      const entry = queue.shift()!;
+      const promise = processGroup(entry)
+        .catch((err) => {
+          if (!graceful) throw err;
+        })
+        .finally(() => {
+          inFlight.delete(promise);
+        });
+      inFlight.add(promise);
+    }
+  };
+
+  startNext();
+  while (inFlight.size > 0) {
+    await Promise.race(inFlight);
+    startNext();
   }
 
   // Optionally update DB cache

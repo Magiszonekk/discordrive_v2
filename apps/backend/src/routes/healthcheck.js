@@ -1,9 +1,11 @@
 const express = require('express');
+const fs = require('fs');
 const { ApiError, asyncHandler } = require('../middleware/errorHandler');
 const { config } = require('../config');
 const db = require('../db');
 const discord = require('../services/discord');
 const { runHealthcheck, resolvePartUrls } = require('@discordrive/core');
+const { logHealthcheck } = require('../utils/healthcheckLogger');
 
 const router = express.Router();
 
@@ -59,7 +61,7 @@ router.post('/scan', asyncHandler(async (req, res) => {
   // Set up in-memory progress tracking
   const scanState = {
     scanId: scan.id,
-    status: 'resolving_urls',
+    status: 'running',
     totalParts: parts.length,
     checkedParts: 0,
     healthyParts: 0,
@@ -70,25 +72,20 @@ router.post('/scan', asyncHandler(async (req, res) => {
   };
   activeScans.set(scan.id, scanState);
 
-  // Respond immediately — URL resolution + scan run asynchronously
+  // Respond immediately — scan run asynchronously
   res.json({
     success: true,
     scanId: scan.id,
     totalParts: parts.length,
   });
 
-  // Resolve fresh Discord URLs before checking health (async, after response)
-  try {
-    parts = await resolvePartUrls(parts, discord.getPool(), undefined, { graceful: true });
-    console.log(`[Healthcheck] URL resolution complete for scan ${scan.id}`);
-  } catch (err) {
-    console.warn('[Healthcheck] Failed to resolve fresh URLs, proceeding with cached URLs:', err.message);
-  }
-
-  scanState.status = 'running';
+  logHealthcheck(`[Healthcheck] 🚀 Starting scan ${scan.id}: scope=${scope}, total=${parts.length} parts`);
+  logHealthcheck(`[Healthcheck] 🏥 Scan ${scan.id}: Using lazy URL resolution (resolve on-demand)`);
 
   // Run scan asynchronously
   const scanConcurrency = concurrency || config.healthcheck.concurrency;
+  const healthCheckStart = Date.now();
+  let lastHealthProgressLog = 0;
 
   runHealthcheck(
     parts,
@@ -105,6 +102,18 @@ router.post('/scan', asyncHandler(async (req, res) => {
         state.healthyParts = healthy;
         state.unhealthyParts = unhealthy;
         state.errorParts = errors;
+      }
+      // Log every 100 parts or at 25%, 50%, 75% milestones
+      if (checked - lastHealthProgressLog >= 100 || checked === total ||
+          (checked >= total * 0.25 && lastHealthProgressLog < total * 0.25) ||
+          (checked >= total * 0.5 && lastHealthProgressLog < total * 0.5) ||
+          (checked >= total * 0.75 && lastHealthProgressLog < total * 0.75)) {
+        const percent = ((checked / total) * 100).toFixed(1);
+        const healthPercent = checked > 0 ? ((healthy / checked) * 100).toFixed(1) : 0;
+        const elapsed = ((Date.now() - healthCheckStart) / 1000).toFixed(0);
+        const rate = (checked / (Date.now() - healthCheckStart) * 1000).toFixed(1);
+        logHealthcheck(`[Healthcheck] 🏥 Scan ${scan.id}: Checked ${checked}/${total} (${percent}%) - Health: ${healthPercent}% - ${rate} parts/s - ${elapsed}s elapsed`);
+        lastHealthProgressLog = checked;
       }
     },
     // onBatchReady - flush results to DB
@@ -123,6 +132,9 @@ router.post('/scan', asyncHandler(async (req, res) => {
       }
     },
     scanState.abortController.signal,
+    // NEW: Pass botPool and db for lazy URL resolution
+    discord.getPool(),
+    db,
   ).then(({ healthy, unhealthy, errors }) => {
     const state = activeScans.get(scan.id);
     const wasCancelled = state && scanState.abortController.signal.aborted;
@@ -133,17 +145,21 @@ router.post('/scan', asyncHandler(async (req, res) => {
     if (wasCancelled) {
       db.completeHealthcheckScan(scan.id, 'cancelled', null);
       if (state) state.status = 'cancelled';
+      const totalTime = ((Date.now() - scanState.startTime) / 1000).toFixed(1);
+      logHealthcheck(`[Healthcheck] ❌ Scan ${scan.id} cancelled after ${totalTime}s`);
     } else {
       db.completeHealthcheckScan(scan.id, 'completed', null);
       if (state) state.status = 'completed';
+      const totalTime = ((Date.now() - scanState.startTime) / 1000).toFixed(1);
+      const healthPercent = state?.checkedParts > 0 ? ((healthy / state.checkedParts) * 100).toFixed(1) : 0;
+      logHealthcheck(`[Healthcheck] ✅ Scan ${scan.id} completed in ${totalTime}s: ${healthy}/${state?.checkedParts || 0} healthy (${healthPercent}%), ${unhealthy} unhealthy, ${errors} errors`);
     }
-
-    console.log(`[Healthcheck] Scan ${scan.id} ${wasCancelled ? 'cancelled' : 'completed'}: ${healthy} healthy, ${unhealthy} unhealthy, ${errors} errors`);
 
     // Keep in activeScans briefly so SSE clients get the final state
     setTimeout(() => activeScans.delete(scan.id), 10000);
   }).catch((err) => {
-    console.error(`[Healthcheck] Scan ${scan.id} error:`, err.message);
+    const totalTime = ((Date.now() - scanState.startTime) / 1000).toFixed(1);
+    logHealthcheck(`[Healthcheck] ❌ Scan ${scan.id} error after ${totalTime}s:`, err.message);
     db.completeHealthcheckScan(scan.id, 'error', err.message);
     const state = activeScans.get(scan.id);
     if (state) state.status = 'error';
@@ -182,6 +198,8 @@ router.get('/scan/:id/progress', (req, res) => {
       percent,
       etaMs,
       partsPerSecond: Math.round(partsPerSecond * 10) / 10,
+      resolvedMessages: state.resolvedMessages || 0,
+      totalMessages: state.totalMessages || 0,
     };
   };
 
@@ -236,7 +254,7 @@ router.post('/scan/:id/cancel', asyncHandler(async (req, res) => {
   if (state && state.status === 'running') {
     state.abortController.abort();
     state.status = 'cancelled';
-    console.log(`[Healthcheck] Cancel requested for scan ${scanId}`);
+    logHealthcheck(`[Healthcheck] Cancel requested for scan ${scanId}`);
     res.json({ success: true, message: 'Scan cancellation requested' });
   } else {
     res.json({ success: false, message: 'No active scan found with that ID' });
@@ -442,8 +460,20 @@ router.post('/diagnose', asyncHandler(async (req, res) => {
     // Layer 1: Fetch Discord message
     try {
       const message = await discord.fetchMessage(part.message_id);
+
+      // Log which bot was used (proxy/direct debug info)
+      const botPool = discord.getPool();
+      const allBots = botPool.getAllBots();
+      const botsInfo = allBots.map(b => `${b.name}: ${b.proxyUrl || 'direct'}`).join(', ');
+      const logMsg = `[${new Date().toISOString()}] Part ${part.id} (msg ${part.message_id}): Bots available: ${botsInfo}\n`;
+      fs.appendFileSync('/tmp/diagnose_debug.log', logMsg);
+      console.log(`[Diagnose] Part ${part.id} (msg ${part.message_id}): Bots available: ${botsInfo}`);
+
       if (message) {
         const attachments = Array.from(message.attachments.values());
+        const attachLogMsg = `[${new Date().toISOString()}] Part ${part.id}: Message found with ${attachments.length} attachments\n`;
+        fs.appendFileSync('/tmp/diagnose_debug.log', attachLogMsg);
+        console.log(`[Diagnose] Part ${part.id}: Message found with ${attachments.length} attachments`);
         diag.messageFetch = { success: true, error: null, attachmentCount: attachments.length };
 
         // Layer 2: Try to match attachment
@@ -501,13 +531,193 @@ router.post('/diagnose', asyncHandler(async (req, res) => {
     diagnosis = 'ATTACHMENTS_MISSING — Messages exist but have no attachments. Files may have been stripped.';
   } else if (summary.urlsResolved > 0 && summary.freshUrlsHealthy === 0) {
     diagnosis = 'FRESH_URLS_FAILING — Resolved fresh URLs but HEAD requests fail. Possible Discord CDN issue or rate limiting.';
-  } else if (summary.freshUrlsHealthy > 0) {
+  } else if (summary.freshUrlsHealthy > 0 && summary.urlsResolved === summary.messagesFound) {
     diagnosis = 'FILES_OK — Files are accessible via Discord. Previous healthcheck may have used expired cached URLs.';
+  } else if (summary.freshUrlsHealthy > 0 && summary.urlsResolved < summary.messagesFound) {
+    const missing = summary.messagesFound - summary.urlsResolved;
+    diagnosis = `PARTIAL_BROKEN — ${summary.freshUrlsHealthy}/${summary.messagesFound} messages accessible, but ${missing} message(s) returned 0 attachments. Bots may lack MessageContent intent or author bots are offline.`;
   } else {
     diagnosis = 'MIXED — Some files accessible, some not. Run a full scan with URL resolution for details.';
   }
 
   res.json({ success: true, diagnosis, summary, results });
+}));
+
+/**
+ * POST /pin-message - Pin a Discord message for debugging
+ */
+router.post('/pin-message', asyncHandler(async (req, res) => {
+  const { messageId } = req.body;
+
+  if (!messageId || typeof messageId !== 'string') {
+    throw new ApiError(400, 'messageId is required and must be a string');
+  }
+
+  try {
+    const result = await discord.pinMessage(messageId);
+
+    if (!result.success) {
+      if (result.error === 'message_not_found') {
+        throw new ApiError(404, 'Message not found in any Discord channel');
+      }
+      throw new ApiError(500, 'Failed to pin message');
+    }
+
+    res.json({
+      success: true,
+      message: result.error === 'already_pinned'
+        ? 'Message was already pinned'
+        : 'Message pinned successfully',
+      alreadyPinned: result.error === 'already_pinned'
+    });
+  } catch (err) {
+    if (err.message.includes('MANAGE_MESSAGES')) {
+      throw new ApiError(403, 'Bot lacks MANAGE_MESSAGES permission. Please grant permission in Discord server settings.');
+    }
+    if (err.message.includes('maximum pin limit')) {
+      throw new ApiError(409, 'Channel has reached maximum pin limit (50). Please unpin some messages first.');
+    }
+    throw err;
+  }
+}));
+
+/**
+ * POST /unpin-all-messages - Unpin all messages in all channels
+ */
+router.post('/unpin-all-messages', asyncHandler(async (req, res) => {
+  try {
+    const botPool = discord.getPool();
+    const allBots = botPool.getAllBots();
+
+    if (allBots.length === 0) {
+      throw new ApiError(500, 'No bots available');
+    }
+
+    const results = {
+      totalChannels: 0,
+      totalUnpinned: 0,
+      errors: [],
+    };
+
+    // Use first bot to unpin from all channels
+    const bot = allBots[0];
+
+    for (const [channelId, channel] of bot.allChannels.entries()) {
+      try {
+        // Fetch pinned messages
+        const pinnedMessages = await channel.messages.fetchPinned();
+        results.totalChannels++;
+
+        console.log(`[UnpinAll] Channel ${channelId}: Found ${pinnedMessages.size} pinned messages`);
+
+        // Unpin each message
+        for (const [messageId, message] of pinnedMessages.entries()) {
+          try {
+            await message.unpin();
+            results.totalUnpinned++;
+            console.log(`[UnpinAll] Unpinned message ${messageId} from channel ${channelId}`);
+          } catch (err) {
+            console.warn(`[UnpinAll] Failed to unpin message ${messageId}:`, err.message);
+            results.errors.push(`Message ${messageId}: ${err.message}`);
+          }
+        }
+      } catch (err) {
+        console.warn(`[UnpinAll] Failed to process channel ${channelId}:`, err.message);
+        results.errors.push(`Channel ${channelId}: ${err.message}`);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Unpinned ${results.totalUnpinned} messages across ${results.totalChannels} channels`,
+      ...results,
+    });
+  } catch (err) {
+    console.error('[UnpinAll] Error:', err.message);
+    throw new ApiError(500, `Failed to unpin messages: ${err.message}`);
+  }
+}));
+
+/**
+ * GET /bots/status - Get status of all bots (for debugging)
+ */
+router.get('/bots/status', asyncHandler(async (req, res) => {
+  const botPool = discord.getPool();
+  const allBots = botPool.getAllBots();
+
+  const botsStatus = allBots.map((bot, index) => ({
+    name: bot.name,
+    proxy: bot.proxyUrl || 'direct',
+    connected: bot.client.isReady(),
+    userId: bot.client.user?.id || null,
+    username: bot.client.user?.username || null,
+    channels: Array.from(bot.allChannels.keys()),
+  }));
+
+  const summary = {
+    total: allBots.length,
+    connected: botsStatus.filter(b => b.connected).length,
+    disconnected: botsStatus.filter(b => !b.connected).length,
+    proxyBots: botsStatus.filter(b => b.proxy !== 'direct').length,
+    directBots: botsStatus.filter(b => b.proxy === 'direct').length,
+  };
+
+  res.json({
+    summary,
+    bots: botsStatus,
+  });
+}));
+
+/**
+ * POST /check-message - Diagnose a single Discord message by ID
+ * Body: { messageId: "1471869904142598287" }
+ */
+router.post('/check-message', asyncHandler(async (req, res) => {
+  const { messageId } = req.body;
+
+  if (!messageId || typeof messageId !== 'string') {
+    throw new ApiError(400, 'messageId is required and must be a string');
+  }
+
+  const result = {
+    messageId,
+    messageFetch: { success: false, error: null, attachmentCount: 0 },
+    urlResolution: { success: false, freshUrl: null, error: null },
+    freshUrlCheck: { success: false, httpStatus: null, error: null },
+  };
+
+  // Layer 1: Fetch Discord message
+  try {
+    const message = await discord.fetchMessage(messageId);
+
+    if (!message) {
+      result.messageFetch = { success: false, error: 'message not found (null)', attachmentCount: 0 };
+    } else {
+      const attachments = Array.from(message.attachments.values());
+      result.messageFetch = { success: true, error: null, attachmentCount: attachments.length };
+
+      // Layer 2: URL resolution
+      if (attachments.length > 0) {
+        result.urlResolution = { success: true, freshUrl: attachments[0].url, error: null };
+      } else {
+        result.urlResolution = { success: false, freshUrl: null, error: 'message has 0 attachments' };
+      }
+    }
+  } catch (err) {
+    result.messageFetch = { success: false, error: err.message, attachmentCount: 0 };
+  }
+
+  // Layer 3: HEAD on fresh URL
+  if (result.urlResolution.freshUrl) {
+    try {
+      const resp = await fetch(result.urlResolution.freshUrl, { method: 'HEAD', signal: AbortSignal.timeout(10000) });
+      result.freshUrlCheck = { success: resp.ok, httpStatus: resp.status, error: null };
+    } catch (err) {
+      result.freshUrlCheck = { success: false, httpStatus: null, error: err.message };
+    }
+  }
+
+  res.json({ success: true, ...result });
 }));
 
 module.exports = router;

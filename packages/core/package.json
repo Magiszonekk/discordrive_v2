@@ -17,8 +17,14 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
+    "@discordjs/proxy": "^2.1.1",
+    "better-sqlite3": "^11.6.0",
     "discord.js": "^14.14.1",
-    "better-sqlite3": "^11.6.0"
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6",
+    "node-global-proxy": "^1.0.1",
+    "socks-proxy-agent": "^8.0.5",
+    "undici": "^7.22.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

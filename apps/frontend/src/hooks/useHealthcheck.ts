@@ -43,6 +43,8 @@ export interface HealthcheckProgress {
   unhealthyParts: number;
   errorParts: number;
   percent: number;
+  resolvedMessages: number;
+  totalMessages: number;
   etaMs: number | null;
   partsPerSecond: number;
 }
@@ -141,5 +143,17 @@ export function useDeleteScan() {
 export function useDiagnose() {
   return useMutation({
     mutationFn: (params?: { sampleSize?: number; fileId?: number }) => api.runDiagnose(params),
+  });
+}
+
+export function usePinMessage() {
+  return useMutation({
+    mutationFn: (messageId: string) => api.pinMessage(messageId),
+  });
+}
+
+export function useUnpinAllMessages() {
+  return useMutation({
+    mutationFn: () => api.unpinAllMessages(),
   });
 }

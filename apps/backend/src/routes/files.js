@@ -99,7 +99,7 @@ const memoryUpload = multer({
  *   - folderId: get files in specific folder (use "null" or omit for root)
  */
 router.get('/', asyncHandler(async (req, res) => {
-  const { folderId, page, limit: limitParam } = req.query;
+  const { folderId, page, limit: limitParam, search } = req.query;
 
   // Parse folderId - null means root level
   const parsedFolderId = folderId === undefined || folderId === 'null' || folderId === ''
@@ -114,8 +114,10 @@ router.get('/', asyncHandler(async (req, res) => {
   const userId = req.user?.id || null;
   const includeUnowned = !req.user;
 
-  const files = db.getFilesPaginated(parsedFolderId, userId, includeUnowned, limit, offset);
-  const totalCount = db.countFiles(parsedFolderId, userId, includeUnowned);
+  const searchQuery = search && typeof search === 'string' && search.trim() ? search.trim() : undefined;
+
+  const files = db.getFilesPaginated(parsedFolderId, userId, includeUnowned, limit, offset, searchQuery);
+  const totalCount = db.countFiles(parsedFolderId, userId, includeUnowned, searchQuery);
   const totalPages = Math.ceil(totalCount / limit) || 1;
   const folders = db.getAllFolders(userId, includeUnowned);
 

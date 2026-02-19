@@ -270,6 +270,7 @@ export class DiscordriveDatabase {
     includeUnowned: boolean = false,
     limit: number = 50,
     offset: number = 0,
+    search?: string,
   ): FileRecord[] {
     const ownsClause = (() => {
       if (userId != null) {
@@ -279,6 +280,21 @@ export class DiscordriveDatabase {
       }
       return 'f.user_id IS NULL';
     })();
+
+    if (search) {
+      return this.db.prepare(`
+        SELECT f.*,
+               GROUP_CONCAT(fp.discord_url, '|') as urls,
+               GROUP_CONCAT(fp.message_id, '|') as message_ids
+        FROM files f
+        LEFT JOIN file_parts fp ON f.id = fp.file_id
+        WHERE f.name LIKE @search
+          AND ${ownsClause}
+        GROUP BY f.id
+        ORDER BY f.created_at DESC
+        LIMIT @limit OFFSET @offset
+      `).all({ userId, search: `%${search}%`, limit, offset }) as FileRecord[];
+    }
 
     if (folderId === undefined || folderId === null) {
       return this.db.prepare(`
@@ -313,6 +329,7 @@ export class DiscordriveDatabase {
     folderId?: number | null,
     userId?: number | null,
     includeUnowned: boolean = false,
+    search?: string,
   ): number {
     const ownsClause = (() => {
       if (userId != null) {
@@ -322,6 +339,14 @@ export class DiscordriveDatabase {
       }
       return 'f.user_id IS NULL';
     })();
+
+    if (search) {
+      const result = this.db.prepare(`
+        SELECT COUNT(*) as total FROM files f
+        WHERE f.name LIKE @search AND ${ownsClause}
+      `).get({ userId, search: `%${search}%` }) as { total: number };
+      return result.total;
+    }
 
     if (folderId === undefined || folderId === null) {
       const result = this.db.prepare(`

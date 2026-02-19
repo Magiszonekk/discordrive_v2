@@ -192,7 +192,7 @@ export function Sidebar({ currentFolderId, onFolderSelect, folders, isLoading, o
 
   return (
     <div className="h-full flex flex-col bg-muted/30">
-      <div className="p-3 sm:p-4">
+      <div className={cn("px-3 pb-3 sm:px-4 sm:pb-4", onClose ? "pt-12" : "pt-3 sm:pt-4")}>
         <Button
           variant="outline"
           className="w-full justify-start gap-2 h-10"

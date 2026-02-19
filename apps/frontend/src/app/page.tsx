@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import {
   Sheet,
   SheetContent,
+  SheetTitle,
 } from "@/components/ui/sheet";
 import {
   DndContext,
@@ -150,6 +151,7 @@ export default function HomePage() {
       {/* Mobile sidebar sheet */}
       <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
         <SheetContent side="left" className="p-0 w-72">
+          <SheetTitle className="sr-only">Navigation</SheetTitle>
           <Sidebar
             folders={folders}
             isLoading={foldersQuery.isLoading}

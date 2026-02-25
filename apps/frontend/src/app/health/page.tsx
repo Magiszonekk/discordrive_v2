@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Label } from "@/components/ui/label";
+import { InputGroup, InputGroupAddon, InputGroupText } from "@/components/ui/input-group";
 import {
   ArrowLeft,
   Activity,
@@ -110,7 +111,8 @@ function ActiveScanPanel({ scanId, progress }: { scanId: number; progress: Healt
   }
 
   const isResolvingUrls = progress.status === "resolving_urls";
-  const isRunning = progress.status === "running" || progress.status === "resolving_urls" || progress.type === "progress";
+  const isResolvePass = progress.status === "resolve_pass";
+  const isRunning = progress.status === "running" || progress.status === "resolving_urls" || progress.status === "resolve_pass" || progress.type === "progress";
   const isDone = ["completed", "cancelled", "error"].includes(progress.status) ||
     ["completed", "cancelled", "error"].includes(progress.type);
 
@@ -137,6 +139,14 @@ function ActiveScanPanel({ scanId, progress }: { scanId: number; progress: Healt
                 </span>
               )}
             </>
+          ) : isResolvePass ? (
+            <>
+              <Loader2 className="size-5 text-orange-400 animate-spin" />
+              Verifying unhealthy parts...
+              <span className="text-sm font-normal text-muted-foreground">
+                ({progress.resolveChecked}/{progress.resolveTotal})
+              </span>
+            </>
           ) : (
             <>
               <Activity className="size-5 text-blue-500 animate-pulse" />
@@ -145,18 +155,22 @@ function ActiveScanPanel({ scanId, progress }: { scanId: number; progress: Healt
           )}
         </CardTitle>
         <CardDescription>
-          {isResolvingUrls
-            ? progress.totalMessages > 0
-              ? `Resolving ${progress.resolvedMessages}/${progress.totalMessages} messages...`
-              : "Preparing URL resolution..."
-            : `${progress.checkedParts} / ${progress.totalParts} chunks checked`}
+          {isResolvePass
+            ? `Checking ${progress.resolveChecked}/${progress.resolveTotal} unhealthy parts via Discord API — ${progress.resolveRefreshed} confirmed cache-only`
+            : isResolvingUrls
+              ? progress.totalMessages > 0
+                ? `Resolving ${progress.resolvedMessages}/${progress.totalMessages} messages...`
+                : "Preparing URL resolution..."
+              : `${progress.checkedParts} / ${progress.totalParts} chunks checked`}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <Progress
-          value={isResolvingUrls && progress.totalMessages > 0
-            ? Math.round((progress.resolvedMessages / progress.totalMessages) * 100)
-            : progress.percent}
+          value={isResolvePass && progress.resolveTotal > 0
+            ? Math.round((progress.resolveChecked / progress.resolveTotal) * 100)
+            : isResolvingUrls && progress.totalMessages > 0
+              ? Math.round((progress.resolvedMessages / progress.totalMessages) * 100)
+              : progress.percent}
           className="h-3"
         />
 
@@ -170,10 +184,14 @@ function ActiveScanPanel({ scanId, progress }: { scanId: number; progress: Healt
           </div>
         )}
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-sm">
           <div>
             <div className="text-muted-foreground">Healthy</div>
-            <div className="text-lg font-semibold text-green-500">{progress.healthyParts}</div>
+            <div className="text-lg font-semibold text-green-500">{progress.healthyParts - (progress.refreshedParts || 0)}</div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">Refreshed</div>
+            <div className="text-lg font-semibold text-blue-400">{progress.refreshedParts || 0}</div>
           </div>
           <div>
             <div className="text-muted-foreground">Unhealthy</div>
@@ -211,85 +229,10 @@ function ActiveScanPanel({ scanId, progress }: { scanId: number; progress: Healt
   );
 }
 
-// Unhealthy files list (works both during and after scan)
-function UnhealthyFilesList({ scanId, refetchInterval }: { scanId: number; refetchInterval?: number }) {
-  const { data, isLoading } = useUnhealthyFiles(scanId, { refetchInterval });
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
-
-  if (isLoading) return <div className="text-sm text-muted-foreground">Loading results...</div>;
-  if (!data?.files?.length) return null;
-
-  const toggle = (fileId: number) => {
-    setExpanded(prev => {
-      const next = new Set(prev);
-      if (next.has(fileId)) next.delete(fileId);
-      else next.add(fileId);
-      return next;
-    });
-  };
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <FileWarning className="size-5 text-red-500" />
-          Unhealthy Files ({data.files.length})
-        </CardTitle>
-        <CardDescription>
-          Files with missing or inaccessible chunks on Discord CDN
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-2">
-          {data.files.map((file: HealthcheckUnhealthyFile) => (
-            <div key={file.fileId} className="border rounded-lg p-3">
-              <button
-                className="flex items-center gap-2 w-full text-left"
-                onClick={() => toggle(file.fileId)}
-              >
-                {expanded.has(file.fileId)
-                  ? <ChevronDown className="size-4 shrink-0" />
-                  : <ChevronRight className="size-4 shrink-0" />
-                }
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium truncate">{file.fileName}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {formatSize(file.fileSize)} &middot; {file.missingParts}/{file.totalParts} chunks missing
-                  </div>
-                </div>
-                <span className="text-sm font-semibold text-red-500 shrink-0">
-                  {file.missingParts} missing
-                </span>
-              </button>
-              {expanded.has(file.fileId) && (
-                <div className="mt-2 pl-6 text-sm text-muted-foreground">
-                  Missing chunk numbers: {file.missingPartNumbers.join(", ")}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-// Diagnose panel
-function DiagnosePanel() {
-  const diagnose = useDiagnose();
+// Shared diagnose results renderer (used by DiagnosePanel and UnhealthyFilesList)
+function DiagnoseResults({ result }: { result: DiagnoseResponse }) {
   const pinMessage = usePinMessage();
-  const unpinAllMessages = useUnpinAllMessages();
-  const [result, setResult] = useState<DiagnoseResponse | null>(null);
   const [pinningMessageId, setPinningMessageId] = useState<string | null>(null);
-
-  const handleDiagnose = async () => {
-    try {
-      const data = await diagnose.mutateAsync({ sampleSize: 5 });
-      setResult(data);
-    } catch {
-      // error handled by mutation
-    }
-  };
 
   const handlePinMessage = async (messageId: string) => {
     setPinningMessageId(messageId);
@@ -316,6 +259,248 @@ function DiagnosePanel() {
     }
   };
 
+  const diagnosisColor = (diagnosis: string) => {
+    if (diagnosis.startsWith("FILES_OK")) return "text-green-500";
+    if (diagnosis.startsWith("MIXED")) return "text-yellow-500";
+    return "text-red-500";
+  };
+
+  const layerIcon = (success: boolean) =>
+    success ? <CheckCircle2 className="size-4 text-green-500 shrink-0" /> : <XCircle className="size-4 text-red-500 shrink-0" />;
+
+  if (result.noUnhealthyData) {
+    return (
+      <div className="text-sm text-muted-foreground border rounded-lg p-4 text-center space-y-2">
+        <FileWarning className="size-8 mx-auto text-muted-foreground/50" />
+        <div>Run a healthcheck scan first to identify unhealthy parts.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {result.sourceScanId && (
+        <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+          <Activity className="size-3" />
+          Sampling from scan #{result.sourceScanId}
+          {result.sourceScanCompletedAt && (
+            <> &middot; completed {formatDate(result.sourceScanCompletedAt)}</>
+          )}
+        </div>
+      )}
+
+      <div className={`text-sm font-semibold ${diagnosisColor(result.diagnosis)}`}>
+        {result.diagnosis}
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-sm">
+        <div className="text-center">
+          <div className="text-muted-foreground">Sampled</div>
+          <div className="text-lg font-semibold">{result.summary.totalSampled}</div>
+        </div>
+        <div className="text-center">
+          <div className="text-muted-foreground">Messages Found</div>
+          <div className="text-lg font-semibold">{result.summary.messagesFound}</div>
+        </div>
+        <div className="text-center">
+          <div className="text-muted-foreground">URLs Resolved</div>
+          <div className="text-lg font-semibold">{result.summary.urlsResolved}</div>
+        </div>
+        <div className="text-center">
+          <div className="text-muted-foreground">Fresh URLs OK</div>
+          <div className="text-lg font-semibold text-green-500">{result.summary.freshUrlsHealthy}</div>
+        </div>
+        <div className="text-center">
+          <div className="text-muted-foreground">Cached URLs OK</div>
+          <div className="text-lg font-semibold">{result.summary.cachedUrlsHealthy}</div>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        {result.results.map((r, i) => {
+          const isPinning = pinningMessageId === r.messageId;
+          return (
+            <div key={i} className="border rounded-lg p-3 text-sm space-y-1">
+              <div className="font-medium text-muted-foreground">
+                Part #{r.partNumber} (file {r.fileId}, msg {r.messageId})
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                <div className="flex items-center gap-2">
+                  {layerIcon(r.messageFetch.success)}
+                  <span>Message fetch{r.messageFetch.success ? ` (${r.messageFetch.attachmentCount} attachments)` : `: ${r.messageFetch.error}`}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {layerIcon(r.urlResolution.success)}
+                  <span>URL resolution{!r.urlResolution.success && r.urlResolution.error ? `: ${r.urlResolution.error}` : ""}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {layerIcon(r.freshUrlCheck.success)}
+                  <span>Fresh URL{r.freshUrlCheck.httpStatus ? ` (HTTP ${r.freshUrlCheck.httpStatus})` : r.freshUrlCheck.error ? `: ${r.freshUrlCheck.error}` : ": n/a"}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {layerIcon(r.cachedUrlCheck.success)}
+                  <span>Cached URL{r.cachedUrlCheck.httpStatus ? ` (HTTP ${r.cachedUrlCheck.httpStatus})` : r.cachedUrlCheck.error ? `: ${r.cachedUrlCheck.error}` : ""}</span>
+                </div>
+              </div>
+              <div className="mt-2 flex gap-2 items-center">
+                {r.urlResolution.freshUrl && (
+                  <a
+                    href={r.urlResolution.freshUrl as string}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-400 hover:text-blue-300 underline"
+                  >
+                    Download fresh URL
+                  </a>
+                )}
+                {r.messageFetch.success && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handlePinMessage(r.messageId)}
+                    disabled={isPinning}
+                    className="h-6 text-xs gap-1.5"
+                  >
+                    {isPinning ? <Loader2 className="size-3 animate-spin" /> : <Pin className="size-3" />}
+                    {isPinning ? 'Pinning...' : 'Pin Message'}
+                  </Button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+    </div>
+  );
+}
+
+// Unhealthy files list (works both during and after scan)
+function UnhealthyFilesList({ scanId, refetchInterval }: { scanId: number; refetchInterval?: number }) {
+  const { data, isLoading } = useUnhealthyFiles(scanId, { refetchInterval });
+  const diagnose = useDiagnose();
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [diagnosisMap, setDiagnosisMap] = useState<Map<number, DiagnoseResponse>>(new Map());
+  const [diagnosingFileId, setDiagnosingFileId] = useState<number | null>(null);
+
+  if (isLoading) return <div className="text-sm text-muted-foreground">Loading results...</div>;
+  if (!data?.files?.length) return null;
+
+  const toggle = (fileId: number) => {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(fileId)) next.delete(fileId);
+      else next.add(fileId);
+      return next;
+    });
+  };
+
+  const handleDiagnoseFile = async (fileId: number) => {
+    setDiagnosingFileId(fileId);
+    try {
+      const result = await diagnose.mutateAsync({ sampleSize: 10, scope: 'unhealthy', fileId });
+      setDiagnosisMap(prev => new Map(prev).set(fileId, result));
+    } catch {
+      // error surfaced by mutation
+    } finally {
+      setDiagnosingFileId(null);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <FileWarning className="size-5 text-red-500" />
+          Unhealthy Files ({data.files.length})
+        </CardTitle>
+        <CardDescription>
+          Files with missing or inaccessible chunks on Discord CDN
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="max-h-[500px] overflow-y-auto space-y-2 pr-1">
+          {data.files.map((file: HealthcheckUnhealthyFile) => (
+            <div key={file.fileId} className="border rounded-lg p-3">
+              <div className="flex items-center gap-2">
+                <button
+                  className="flex items-center gap-2 flex-1 text-left min-w-0"
+                  onClick={() => toggle(file.fileId)}
+                >
+                  {expanded.has(file.fileId)
+                    ? <ChevronDown className="size-4 shrink-0" />
+                    : <ChevronRight className="size-4 shrink-0" />
+                  }
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium truncate">{file.fileName}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {formatSize(file.fileSize)} &middot; {file.missingParts}/{file.totalParts} chunks missing
+                    </div>
+                  </div>
+                  <span className="text-sm font-semibold text-red-500 shrink-0 mr-2">
+                    {file.missingParts} missing
+                  </span>
+                </button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs gap-1.5 shrink-0"
+                  onClick={() => handleDiagnoseFile(file.fileId)}
+                  disabled={diagnosingFileId === file.fileId || diagnose.isPending}
+                >
+                  {diagnosingFileId === file.fileId
+                    ? <Loader2 className="size-3 animate-spin" />
+                    : <Stethoscope className="size-3" />
+                  }
+                  {diagnosingFileId === file.fileId ? 'Diagnosing...' : 'Diagnose'}
+                </Button>
+              </div>
+              {expanded.has(file.fileId) && (
+                <div className="mt-2 pl-6 text-sm text-muted-foreground">
+                  Missing chunk numbers: {file.missingPartNumbers.join(", ")}
+                </div>
+              )}
+              {diagnosisMap.has(file.fileId) && (
+                <div className="mt-3 border-t pt-3">
+                  <DiagnoseResults result={diagnosisMap.get(file.fileId)!} />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Diagnose panel
+function DiagnosePanel() {
+  const diagnose = useDiagnose();
+  const unpinAllMessages = useUnpinAllMessages();
+  const [randomResult, setRandomResult] = useState<DiagnoseResponse | null>(null);
+  const [unhealthyResult, setUnhealthyResult] = useState<DiagnoseResponse | null>(null);
+  const [activeMode, setActiveMode] = useState<'random' | 'unhealthy'>('random');
+
+  const handleDiagnose = async () => {
+    setActiveMode('random');
+    try {
+      const data = await diagnose.mutateAsync({ sampleSize: 5 });
+      setRandomResult(data);
+    } catch {
+      // error handled by mutation
+    }
+  };
+
+  const handleDiagnoseUnhealthy = async () => {
+    setActiveMode('unhealthy');
+    try {
+      const data = await diagnose.mutateAsync({ sampleSize: 5, scope: 'unhealthy' });
+      setUnhealthyResult(data);
+    } catch {
+      // error handled by mutation
+    }
+  };
+
   const handleUnpinAllMessages = async () => {
     try {
       const response = await unpinAllMessages.mutateAsync();
@@ -328,14 +513,7 @@ function DiagnosePanel() {
     }
   };
 
-  const diagnosisColor = (diagnosis: string) => {
-    if (diagnosis.startsWith("FILES_OK")) return "text-green-500";
-    if (diagnosis.startsWith("MIXED")) return "text-yellow-500";
-    return "text-red-500";
-  };
-
-  const layerIcon = (success: boolean) =>
-    success ? <CheckCircle2 className="size-4 text-green-500 shrink-0" /> : <XCircle className="size-4 text-red-500 shrink-0" />;
+  const activeResult = activeMode === 'unhealthy' ? unhealthyResult : randomResult;
 
   return (
     <Card>
@@ -349,18 +527,31 @@ function DiagnosePanel() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             onClick={handleDiagnose}
             disabled={diagnose.isPending}
             variant="outline"
           >
-            {diagnose.isPending ? (
+            {diagnose.isPending && activeMode === 'random' ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
               <Stethoscope className="size-4" />
             )}
-            {diagnose.isPending ? "Diagnosing..." : "Run Diagnostic"}
+            {diagnose.isPending && activeMode === 'random' ? "Diagnosing..." : "Run Diagnostic"}
+          </Button>
+          <Button
+            onClick={handleDiagnoseUnhealthy}
+            disabled={diagnose.isPending}
+            variant="outline"
+            className="border-red-500/50 text-red-400 hover:text-red-300 hover:bg-red-950/20"
+          >
+            {diagnose.isPending && activeMode === 'unhealthy' ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <XCircle className="size-4" />
+            )}
+            {diagnose.isPending && activeMode === 'unhealthy' ? "Diagnosing..." : "Diagnose Unhealthy"}
           </Button>
           <Button
             onClick={handleUnpinAllMessages}
@@ -382,102 +573,7 @@ function DiagnosePanel() {
           </div>
         )}
 
-        {result && (
-          <div className="space-y-4">
-            {/* Diagnosis */}
-            <div className={`text-sm font-semibold ${diagnosisColor(result.diagnosis)}`}>
-              {result.diagnosis}
-            </div>
-
-            {/* Summary */}
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-sm">
-              <div className="text-center">
-                <div className="text-muted-foreground">Sampled</div>
-                <div className="text-lg font-semibold">{result.summary.totalSampled}</div>
-              </div>
-              <div className="text-center">
-                <div className="text-muted-foreground">Messages Found</div>
-                <div className="text-lg font-semibold">{result.summary.messagesFound}</div>
-              </div>
-              <div className="text-center">
-                <div className="text-muted-foreground">URLs Resolved</div>
-                <div className="text-lg font-semibold">{result.summary.urlsResolved}</div>
-              </div>
-              <div className="text-center">
-                <div className="text-muted-foreground">Fresh URLs OK</div>
-                <div className="text-lg font-semibold text-green-500">{result.summary.freshUrlsHealthy}</div>
-              </div>
-              <div className="text-center">
-                <div className="text-muted-foreground">Cached URLs OK</div>
-                <div className="text-lg font-semibold">{result.summary.cachedUrlsHealthy}</div>
-              </div>
-            </div>
-
-            {/* Per-part results */}
-            <div className="space-y-2">
-              {result.results.map((r, i) => {
-                const showPinButton = !r.urlResolution.success && r.messageFetch.success;
-                const isPinning = pinningMessageId === r.messageId;
-
-                return (
-                  <div key={i} className="border rounded-lg p-3 text-sm space-y-1">
-                    <div className="font-medium text-muted-foreground">
-                      Part #{r.partNumber} (file {r.fileId}, msg {r.messageId})
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-                      <div className="flex items-center gap-2">
-                        {layerIcon(r.messageFetch.success)}
-                        <span>Message fetch{r.messageFetch.success ? ` (${r.messageFetch.attachmentCount} attachments)` : `: ${r.messageFetch.error}`}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {layerIcon(r.urlResolution.success)}
-                        <span>URL resolution{!r.urlResolution.success && r.urlResolution.error ? `: ${r.urlResolution.error}` : ""}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {layerIcon(r.freshUrlCheck.success)}
-                        <span>Fresh URL{r.freshUrlCheck.httpStatus ? ` (HTTP ${r.freshUrlCheck.httpStatus})` : r.freshUrlCheck.error ? `: ${r.freshUrlCheck.error}` : ": n/a"}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {layerIcon(r.cachedUrlCheck.success)}
-                        <span>Cached URL{r.cachedUrlCheck.httpStatus ? ` (HTTP ${r.cachedUrlCheck.httpStatus})` : r.cachedUrlCheck.error ? `: ${r.cachedUrlCheck.error}` : ""}</span>
-                      </div>
-                    </div>
-
-                    {/* Action buttons row */}
-                    <div className="mt-2 flex gap-2 items-center">
-                      {r.urlResolution.freshUrl && (
-                        <a
-                          href={r.urlResolution.freshUrl as string}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-blue-400 hover:text-blue-300 underline"
-                        >
-                          Download fresh URL
-                        </a>
-                      )}
-                      {showPinButton && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handlePinMessage(r.messageId)}
-                          disabled={isPinning}
-                          className="h-6 text-xs gap-1.5"
-                        >
-                          {isPinning ? (
-                            <Loader2 className="size-3 animate-spin" />
-                          ) : (
-                            <Pin className="size-3" />
-                          )}
-                          {isPinning ? 'Pinning...' : 'Pin Message'}
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+        {activeResult && <DiagnoseResults result={activeResult} />}
       </CardContent>
     </Card>
   );
@@ -549,9 +645,14 @@ function ScanHistory({
               )}
             </div>
           </div>
-          {scan.unhealthyParts > 0 && (
-            <div className="mt-1 text-xs text-red-500">
-              {scan.unhealthyParts} unhealthy + {scan.errorParts} errors
+          {(scan.unhealthyParts > 0 || scan.refreshedParts > 0) && (
+            <div className="mt-1 text-xs flex gap-2">
+              {scan.unhealthyParts > 0 && (
+                <span className="text-red-500">{scan.unhealthyParts} unhealthy + {scan.errorParts} errors</span>
+              )}
+              {scan.refreshedParts > 0 && (
+                <span className="text-blue-400">{scan.refreshedParts} stale cache refreshed</span>
+              )}
             </div>
           )}
         </div>
@@ -581,6 +682,7 @@ export default function HealthPage() {
   const startScan = useStartScan();
   const [activeScanId, setActiveScanId] = useState<number | null>(null);
   const [selectedScanId, setSelectedScanId] = useState<number | null>(null);
+  const [samplePercent, setSamplePercent] = useState<number>(5);
 
   const scans = scansData?.scans || [];
   const runningScan = scans.find((s) => s.status === "running");
@@ -590,8 +692,8 @@ export default function HealthPage() {
   const { progress: activeProgress } = useHealthcheckProgress(currentActiveScanId);
 
   const isActiveScanRunning = activeProgress
-    ? !["completed", "cancelled", "error"].includes(activeProgress.status) &&
-      !["completed", "cancelled", "error"].includes(activeProgress.type)
+    ? !["completed", "cancelled", "error"].includes(activeProgress.status ?? "") &&
+      !["completed", "cancelled", "error"].includes(activeProgress.type ?? "")
     : false;
 
   const handleStartScan = async (scope: "all" | "sample", samplePercent?: number) => {
@@ -638,13 +740,32 @@ export default function HealthPage() {
               HEAD requests are used to check each chunk without downloading data.
             </CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-wrap gap-3">
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <InputGroup>
+                <input
+                  type="number"
+                  min={0.01}
+                  max={100}
+                  step={0.1}
+                  value={samplePercent}
+                  onChange={(e) => {
+                    const v = Math.max(0.01, Math.min(100, parseFloat(e.target.value) || 0.1));
+                    setSamplePercent(Math.round(v * 100) / 100);
+                  }}
+                  disabled={!!currentActiveScanId || startScan.isPending}
+                  className="w-20 h-9 rounded-md border border-input bg-background pl-2 pr-6 text-sm text-center disabled:opacity-50"
+                />
+                <InputGroupAddon align="inline-end">
+                  <InputGroupText>%</InputGroupText>
+                </InputGroupAddon>
+              </InputGroup>
               <Button
-                onClick={() => handleStartScan("sample", 5)}
+                onClick={() => handleStartScan("sample", samplePercent)}
                 disabled={!!currentActiveScanId || startScan.isPending}
               >
                 <Zap className="size-4" />
-                Quick Check (5%)
+                Quick Check ({samplePercent}%)
               </Button>
               <Button
                 variant="outline"
@@ -654,11 +775,12 @@ export default function HealthPage() {
                 <Play className="size-4" />
                 Full Scan
               </Button>
-              {startScan.isError && (
-                <div className="text-sm text-red-500 self-center">
-                  {(startScan.error as Error)?.message || "Failed to start scan"}
-                </div>
-              )}
+            </div>
+            {startScan.isError && (
+              <div className="text-sm text-red-500">
+                {(startScan.error as Error)?.message || "Failed to start scan"}
+              </div>
+            )}
           </CardContent>
         </Card>
 

@@ -91,6 +91,12 @@ function initDatabase(dbPath) {
   // Mark orphaned healthcheck scans as error (from server restart)
   db.prepare("UPDATE healthcheck_scans SET status = 'error', error_message = 'Server restarted' WHERE status IN ('pending', 'running')").run();
 
+  // Healthcheck scans migrations
+  const scanColumns = db.prepare("PRAGMA table_info(healthcheck_scans)").all().map(c => c.name);
+  if (!scanColumns.includes('refreshed_parts')) {
+    db.exec('ALTER TABLE healthcheck_scans ADD COLUMN refreshed_parts INTEGER DEFAULT 0');
+  }
+
   // ==================== MIGRATIONS ====================
   // These handle existing databases that may be missing newer columns.
 
@@ -600,12 +606,12 @@ function createHealthcheckScan(scope, scopeId, samplePercent, totalParts) {
   return getDb().prepare('SELECT * FROM healthcheck_scans WHERE id = ?').get(result.lastInsertRowid);
 }
 
-function updateHealthcheckScanProgress(scanId, checked, healthy, unhealthy, errorCount) {
+function updateHealthcheckScanProgress(scanId, checked, healthy, unhealthy, errorCount, refreshed = 0) {
   getDb().prepare(`
     UPDATE healthcheck_scans
-    SET checked_parts = ?, healthy_parts = ?, unhealthy_parts = ?, error_parts = ?
+    SET checked_parts = ?, healthy_parts = ?, unhealthy_parts = ?, error_parts = ?, refreshed_parts = ?
     WHERE id = ?
-  `).run(checked, healthy, unhealthy, errorCount, scanId);
+  `).run(checked, healthy, unhealthy, errorCount, refreshed, scanId);
 }
 
 function completeHealthcheckScan(scanId, status, errorMessage) {
@@ -703,6 +709,101 @@ function getSampleParts(limit = 5) {
   return getDb().prepare('SELECT * FROM file_parts ORDER BY RANDOM() LIMIT ?').all(limit);
 }
 
+function getUnhealthyPartsFromLatestScan(limit = 5, scanId = null) {
+  const db = getDb();
+  let resolvedScanId = scanId;
+  if (!resolvedScanId) {
+    const latest = db.prepare(`
+      SELECT hs.id FROM healthcheck_scans hs
+      WHERE hs.status = 'completed'
+        AND EXISTS (
+          SELECT 1 FROM healthcheck_results hr
+          WHERE hr.scan_id = hs.id AND hr.status IN ('unhealthy', 'error')
+        )
+      ORDER BY hs.completed_at DESC LIMIT 1
+    `).get();
+    if (!latest) return { parts: [], scanId: null, scan: null };
+    resolvedScanId = latest.id;
+  }
+  const scan = db.prepare('SELECT * FROM healthcheck_scans WHERE id = ?').get(resolvedScanId) || null;
+  const parts = db.prepare(`
+    SELECT fp.* FROM healthcheck_results hr
+    JOIN file_parts fp ON hr.file_part_id = fp.id
+    WHERE hr.scan_id = ? AND hr.status IN ('unhealthy', 'error')
+    ORDER BY RANDOM() LIMIT ?
+  `).all(resolvedScanId, limit);
+  return { parts, scanId: resolvedScanId, scan };
+}
+
+function getUnhealthyPartsForFile(fileId, limit = 5, scanId = null) {
+  const db = getDb();
+  let resolvedScanId = scanId;
+  if (!resolvedScanId) {
+    const latest = db.prepare(`
+      SELECT hs.id FROM healthcheck_scans hs
+      WHERE hs.status = 'completed'
+      ORDER BY hs.completed_at DESC LIMIT 1
+    `).get();
+    if (!latest) return { parts: [], scanId: null, scan: null };
+    resolvedScanId = latest.id;
+  }
+  const scan = db.prepare('SELECT * FROM healthcheck_scans WHERE id = ?').get(resolvedScanId) || null;
+  const parts = db.prepare(`
+    SELECT fp.* FROM healthcheck_results hr
+    JOIN file_parts fp ON hr.file_part_id = fp.id
+    WHERE hr.scan_id = ? AND hr.file_id = ? AND hr.status IN ('unhealthy', 'error')
+    ORDER BY fp.part_number LIMIT ?
+  `).all(resolvedScanId, fileId, limit);
+  return { parts, scanId: resolvedScanId, scan };
+}
+
+function getAllUnhealthyPartsForScan(scanId) {
+  return getDb().prepare(`
+    SELECT fp.* FROM healthcheck_results hr
+    JOIN file_parts fp ON hr.file_part_id = fp.id
+    WHERE hr.scan_id = ? AND hr.status IN ('unhealthy', 'error')
+    ORDER BY fp.id
+  `).all(scanId);
+}
+
+function updatePartUrls(updates) {
+  const db = getDb();
+  const stmt = db.prepare('UPDATE file_parts SET discord_url = ? WHERE id = ?');
+  const updateAll = db.transaction((items) => {
+    for (const item of items) stmt.run(item.discordUrl, item.id);
+  });
+  updateAll(updates);
+}
+
+function resolveHealthcheckParts(scanId, partIds) {
+  const db = getDb();
+  if (!partIds || !partIds.length) return;
+  const placeholders = partIds.map(() => '?').join(',');
+  db.prepare(
+    `UPDATE healthcheck_results SET status = 'url_refreshed'
+     WHERE scan_id = ? AND file_part_id IN (${placeholders})
+       AND status IN ('unhealthy', 'error')`
+  ).run(scanId, ...partIds);
+
+  // Recalculate and persist summary counts
+  const counts = db.prepare(`
+    SELECT
+      COUNT(CASE WHEN status IN ('healthy','url_refreshed') THEN 1 END) as healthy_parts,
+      COUNT(CASE WHEN status = 'unhealthy' THEN 1 END)                  as unhealthy_parts,
+      COUNT(CASE WHEN status = 'error' THEN 1 END)                      as error_parts,
+      COUNT(CASE WHEN status = 'url_refreshed' THEN 1 END)              as refreshed_parts
+    FROM healthcheck_results WHERE scan_id = ?
+  `).get(scanId);
+  db.prepare(`
+    UPDATE healthcheck_scans
+    SET healthy_parts   = ?,
+        unhealthy_parts = ?,
+        error_parts     = ?,
+        refreshed_parts = ?
+    WHERE id = ?
+  `).run(counts.healthy_parts, counts.unhealthy_parts, counts.error_parts, counts.refreshed_parts, scanId);
+}
+
 function deleteHealthcheckScan(scanId) {
   const result = getDb().prepare('DELETE FROM healthcheck_scans WHERE id = ?').run(scanId);
   return result.changes > 0;
@@ -787,4 +888,9 @@ module.exports = {
   deleteHealthcheckScan,
   getHttpStatusDistribution,
   getSampleParts,
+  getUnhealthyPartsFromLatestScan,
+  getUnhealthyPartsForFile,
+  getAllUnhealthyPartsForScan,
+  updatePartUrls,
+  resolveHealthcheckParts,
 };

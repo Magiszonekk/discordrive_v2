@@ -4,7 +4,7 @@ const { ApiError, asyncHandler } = require('../middleware/errorHandler');
 const { config } = require('../config');
 const db = require('../db');
 const discord = require('../services/discord');
-const { runHealthcheck, resolvePartUrls } = require('@discordrive/core');
+const { runHealthcheck, resolvePartUrls, runResolvePass } = require('@discordrive/core');
 const { logHealthcheck } = require('../utils/healthcheckLogger');
 
 const router = express.Router();
@@ -45,8 +45,8 @@ router.post('/scan', asyncHandler(async (req, res) => {
   if ((scope === 'folder' || scope === 'file') && !scopeId) {
     throw new ApiError(400, 'scopeId is required for folder/file scope');
   }
-  if (scope === 'sample' && (!samplePercent || samplePercent < 1 || samplePercent > 100)) {
-    throw new ApiError(400, 'samplePercent must be between 1 and 100');
+  if (scope === 'sample' && (!samplePercent || samplePercent < 0.01 || samplePercent > 100)) {
+    throw new ApiError(400, 'samplePercent must be between 0.01 and 100');
   }
 
   // Get parts to check
@@ -67,6 +67,10 @@ router.post('/scan', asyncHandler(async (req, res) => {
     healthyParts: 0,
     unhealthyParts: 0,
     errorParts: 0,
+    refreshedParts: 0,
+    resolveTotal: 0,
+    resolveChecked: 0,
+    resolveRefreshed: 0,
     startTime: Date.now(),
     abortController: new AbortController(),
   };
@@ -95,13 +99,14 @@ router.post('/scan', asyncHandler(async (req, res) => {
       batchDelayMs: config.healthcheck.batchDelayMs,
     },
     // onProgress
-    (checked, total, healthy, unhealthy, errors) => {
+    (checked, total, healthy, unhealthy, errors, refreshed) => {
       const state = activeScans.get(scan.id);
       if (state) {
         state.checkedParts = checked;
         state.healthyParts = healthy;
         state.unhealthyParts = unhealthy;
         state.errorParts = errors;
+        state.refreshedParts = refreshed;
       }
       // Log every 100 parts or at 25%, 50%, 75% milestones
       if (checked - lastHealthProgressLog >= 100 || checked === total ||
@@ -124,7 +129,7 @@ router.post('/scan', asyncHandler(async (req, res) => {
         if (state) {
           db.updateHealthcheckScanProgress(
             scan.id, state.checkedParts, state.healthyParts,
-            state.unhealthyParts, state.errorParts,
+            state.unhealthyParts, state.errorParts, state.refreshedParts,
           );
         }
       } catch (err) {
@@ -135,12 +140,12 @@ router.post('/scan', asyncHandler(async (req, res) => {
     // NEW: Pass botPool and db for lazy URL resolution
     discord.getPool(),
     db,
-  ).then(({ healthy, unhealthy, errors }) => {
+  ).then(async ({ healthy, unhealthy, errors, refreshed }) => {
     const state = activeScans.get(scan.id);
     const wasCancelled = state && scanState.abortController.signal.aborted;
 
     // Final progress update
-    db.updateHealthcheckScanProgress(scan.id, state?.checkedParts || 0, healthy, unhealthy, errors);
+    db.updateHealthcheckScanProgress(scan.id, state?.checkedParts || 0, healthy, unhealthy, errors, refreshed);
 
     if (wasCancelled) {
       db.completeHealthcheckScan(scan.id, 'cancelled', null);
@@ -148,6 +153,41 @@ router.post('/scan', asyncHandler(async (req, res) => {
       const totalTime = ((Date.now() - scanState.startTime) / 1000).toFixed(1);
       logHealthcheck(`[Healthcheck] ❌ Scan ${scan.id} cancelled after ${totalTime}s`);
     } else {
+      // Run resolve pass: reclassify unhealthy parts as url_refreshed or truly unhealthy
+      if (state && unhealthy > 0) {
+        state.status = 'resolve_pass';
+        const unhealthyParts = db.getAllUnhealthyPartsForScan(scan.id);
+
+        if (unhealthyParts.length > 0) {
+          state.resolveTotal = unhealthyParts.length;
+          logHealthcheck(`[Healthcheck] 🔍 Scan ${scan.id}: Running resolve pass on ${unhealthyParts.length} unhealthy parts`);
+
+          try {
+            const { refreshedPartIds } = await runResolvePass(
+              unhealthyParts,
+              (messageId, channelId) => discord.fetchMessage(messageId, channelId),
+              db,
+              { timeoutMs: config.healthcheck.requestTimeoutMs, signal: scanState.abortController.signal },
+              (checked, _total, resolveRefreshed) => {
+                if (state) {
+                  state.resolveChecked = checked;
+                  state.resolveRefreshed = resolveRefreshed;
+                }
+              },
+            );
+
+            if (refreshedPartIds.length > 0) {
+              db.resolveHealthcheckParts(scan.id, refreshedPartIds);
+              logHealthcheck(`[Healthcheck] 🔄 Scan ${scan.id}: Resolve pass refreshed ${refreshedPartIds.length}/${unhealthyParts.length} parts`);
+            } else {
+              logHealthcheck(`[Healthcheck] 🔍 Scan ${scan.id}: Resolve pass complete — 0 parts refreshed (all truly unhealthy)`);
+            }
+          } catch (resolveErr) {
+            logHealthcheck(`[Healthcheck] ⚠️ Scan ${scan.id}: Resolve pass error: ${resolveErr.message}`);
+          }
+        }
+      }
+
       db.completeHealthcheckScan(scan.id, 'completed', null);
       if (state) state.status = 'completed';
       const totalTime = ((Date.now() - scanState.startTime) / 1000).toFixed(1);
@@ -195,6 +235,10 @@ router.get('/scan/:id/progress', (req, res) => {
       healthyParts: state.healthyParts,
       unhealthyParts: state.unhealthyParts,
       errorParts: state.errorParts,
+      refreshedParts: state.refreshedParts || 0,
+      resolveTotal: state.resolveTotal || 0,
+      resolveChecked: state.resolveChecked || 0,
+      resolveRefreshed: state.resolveRefreshed || 0,
       percent,
       etaMs,
       partsPerSecond: Math.round(partsPerSecond * 10) / 10,
@@ -251,7 +295,7 @@ router.post('/scan/:id/cancel', asyncHandler(async (req, res) => {
   const scanId = parseInt(req.params.id, 10);
   const state = activeScans.get(scanId);
 
-  if (state && state.status === 'running') {
+  if (state && (state.status === 'running' || state.status === 'resolve_pass')) {
     state.abortController.abort();
     state.status = 'cancelled';
     logHealthcheck(`[Healthcheck] Cancel requested for scan ${scanId}`);
@@ -281,6 +325,7 @@ router.get('/scan/:id', asyncHandler(async (req, res) => {
         healthyParts: state.healthyParts,
         unhealthyParts: state.unhealthyParts,
         errorParts: state.errorParts,
+        refreshedParts: state.refreshedParts || 0,
         healthPercent: state.checkedParts > 0
           ? Math.round((state.healthyParts / state.checkedParts) * 10000) / 100
           : 0,
@@ -310,6 +355,7 @@ router.get('/scan/:id', asyncHandler(async (req, res) => {
       healthyParts: scan.healthy_parts,
       unhealthyParts: scan.unhealthy_parts,
       errorParts: scan.error_parts,
+      refreshedParts: scan.refreshed_parts || 0,
       healthPercent: checkedParts > 0
         ? Math.round((scan.healthy_parts / checkedParts) * 10000) / 100
         : 0,
@@ -389,6 +435,7 @@ router.get('/scans', asyncHandler(async (req, res) => {
       healthyParts: s.healthy_parts,
       unhealthyParts: s.unhealthy_parts,
       errorParts: s.error_parts,
+      refreshedParts: s.refreshed_parts || 0,
       healthPercent: s.checked_parts > 0
         ? Math.round((s.healthy_parts / s.checked_parts) * 10000) / 100
         : 0,
@@ -423,12 +470,33 @@ router.delete('/scan/:id', asyncHandler(async (req, res) => {
  * POST /diagnose - Run layered diagnostic to determine why parts are unhealthy
  */
 router.post('/diagnose', asyncHandler(async (req, res) => {
-  const { sampleSize = 5, fileId } = req.body;
+  const { sampleSize = 5, fileId, scope, scanId } = req.body;
   const limit = Math.min(Math.max(1, sampleSize), 20);
 
   // Get sample parts
   let parts;
-  if (fileId) {
+  let sourceScanId = null;
+  let sourceScanCompletedAt = null;
+
+  if (scope === 'unhealthy') {
+    const result = fileId
+      ? db.getUnhealthyPartsForFile(fileId, limit, scanId || null)
+      : db.getUnhealthyPartsFromLatestScan(limit, scanId || null);
+    if (!result.parts || result.parts.length === 0) {
+      return res.json({
+        success: true,
+        noUnhealthyData: true,
+        diagnosis: 'NO_UNHEALTHY_DATA — Run a healthcheck scan first, or all parts are currently healthy.',
+        summary: { totalSampled: 0, messagesFound: 0, urlsResolved: 0, freshUrlsHealthy: 0, cachedUrlsHealthy: 0 },
+        results: [],
+        sourceScanId: null,
+        sourceScanCompletedAt: null,
+      });
+    }
+    parts = result.parts;
+    sourceScanId = result.scanId;
+    sourceScanCompletedAt = result.scan?.completed_at || null;
+  } else if (fileId) {
     const file = db.getFileById(fileId);
     if (!file) throw new ApiError(404, 'File not found');
     parts = (file.parts || []).slice(0, limit);
@@ -540,7 +608,21 @@ router.post('/diagnose', asyncHandler(async (req, res) => {
     diagnosis = 'MIXED — Some files accessible, some not. Run a full scan with URL resolution for details.';
   }
 
-  res.json({ success: true, diagnosis, summary, results });
+  res.json({ success: true, diagnosis, summary, results, sourceScanId, sourceScanCompletedAt });
+}));
+
+/**
+ * POST /scan/:id/resolve-parts - Mark diagnosed-OK parts as url_refreshed to remove from unhealthy list
+ */
+router.post('/scan/:id/resolve-parts', asyncHandler(async (req, res) => {
+  const scanId = parseInt(req.params.id, 10);
+  const { partIds } = req.body;
+  if (!Array.isArray(partIds) || partIds.length === 0) {
+    throw new ApiError(400, 'partIds must be a non-empty array');
+  }
+  db.resolveHealthcheckParts(scanId, partIds);
+  const scan = db.getHealthcheckScan(scanId);
+  res.json({ success: true, scan });
 }));
 
 /**

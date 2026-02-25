@@ -42,6 +42,10 @@ export interface HealthcheckProgress {
   healthyParts: number;
   unhealthyParts: number;
   errorParts: number;
+  refreshedParts: number;
+  resolveTotal: number;
+  resolveChecked: number;
+  resolveRefreshed: number;
   percent: number;
   resolvedMessages: number;
   totalMessages: number;
@@ -142,7 +146,19 @@ export function useDeleteScan() {
 
 export function useDiagnose() {
   return useMutation({
-    mutationFn: (params?: { sampleSize?: number; fileId?: number }) => api.runDiagnose(params),
+    mutationFn: (params?: { sampleSize?: number; fileId?: number; scope?: 'unhealthy'; scanId?: number }) => api.runDiagnose(params),
+  });
+}
+
+export function useResolveHealthcheckParts() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ scanId, partIds }: { scanId: number; partIds: number[] }) =>
+      api.resolveHealthcheckParts(scanId, partIds),
+    onSuccess: (_data, { scanId }) => {
+      queryClient.invalidateQueries({ queryKey: ["healthcheck-scans"] });
+      queryClient.invalidateQueries({ queryKey: ["healthcheck-files", scanId] });
+    },
   });
 }
 

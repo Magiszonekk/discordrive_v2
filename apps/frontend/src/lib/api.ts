@@ -457,6 +457,7 @@ export interface HealthcheckScanResult {
     healthyParts: number;
     unhealthyParts: number;
     errorParts: number;
+    refreshedParts: number;
     healthPercent: number;
     startedAt: string | null;
     completedAt: string | null;
@@ -477,6 +478,7 @@ export interface HealthcheckScanListItem {
   healthyParts: number;
   unhealthyParts: number;
   errorParts: number;
+  refreshedParts: number;
   healthPercent: number;
   startedAt: string | null;
   completedAt: string | null;
@@ -557,12 +559,22 @@ export interface DiagnoseResponse {
   diagnosis: string;
   summary: DiagnoseSummary;
   results: DiagnosePartResult[];
+  noUnhealthyData?: boolean;
+  sourceScanId?: number | null;
+  sourceScanCompletedAt?: string | null;
 }
 
-export async function runDiagnose(params?: { sampleSize?: number; fileId?: number }): Promise<DiagnoseResponse> {
+export async function runDiagnose(params?: { sampleSize?: number; fileId?: number; scope?: 'unhealthy'; scanId?: number }): Promise<DiagnoseResponse> {
   return fetchJSON("/healthcheck/diagnose", {
     method: "POST",
     body: JSON.stringify(params || {}),
+  });
+}
+
+export async function resolveHealthcheckParts(scanId: number, partIds: number[]): Promise<{ success: boolean }> {
+  return fetchJSON(`/healthcheck/scan/${scanId}/resolve-parts`, {
+    method: "POST",
+    body: JSON.stringify({ partIds }),
   });
 }
 

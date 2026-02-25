@@ -298,7 +298,7 @@ export { createDecryptionStream, deriveKeyFromHeader } from './crypto/decrypt.js
 export { parseEncryptionHeader, isChunkedHeader, parseVectorField } from './crypto/utils.js';
 
 // Healthcheck
-export { runHealthcheck } from './healthcheck/scanner.js';
+export { runHealthcheck, runResolvePass } from './healthcheck/scanner.js';
 export type {
   HealthcheckPartInput,
   HealthcheckPartResult,

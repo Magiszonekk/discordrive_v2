@@ -14,7 +14,8 @@ export interface HealthcheckPartInput {
 export interface HealthcheckPartResult {
   filePartId: number;
   fileId: number;
-  status: 'healthy' | 'unhealthy' | 'error';
+  /** healthy = cached URL OK; url_refreshed = cached URL expired but fresh URL worked; unhealthy = truly inaccessible; error = network/timeout */
+  status: 'healthy' | 'url_refreshed' | 'unhealthy' | 'error';
   httpStatus: number | null;
   responseTimeMs: number;
 }
@@ -31,6 +32,7 @@ export type HealthcheckProgressCallback = (
   healthy: number,
   unhealthy: number,
   errors: number,
+  refreshed: number,
 ) => void;
 
 export type HealthcheckBatchCallback = (results: HealthcheckPartResult[]) => void;
@@ -44,6 +46,24 @@ const DEFAULT_CONFIG: HealthcheckConfig = {
 // Keep-alive agents for efficient HEAD requests
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 30 });
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 30 });
+
+/** Simple semaphore to cap concurrent Discord API calls during lazy URL resolution */
+function createSemaphore(max: number) {
+  let running = 0;
+  const queue: Array<() => void> = [];
+  return {
+    acquire(): Promise<void> {
+      return new Promise(resolve => {
+        if (running < max) { running++; resolve(); }
+        else { queue.push(() => { running++; resolve(); }); }
+      });
+    },
+    release() {
+      running--;
+      if (queue.length > 0) queue.shift()!();
+    },
+  };
+}
 
 /**
  * Check a single part's health via HTTP HEAD request.
@@ -143,6 +163,7 @@ async function checkPartHealthWithLazyResolution(
     signal?: AbortSignal;
     retries?: number;
   },
+  discordSemaphore?: ReturnType<typeof createSemaphore>,
 ): Promise<HealthcheckPartResult> {
   // Try 1: HEAD on cached URL
   let result = await checkPartHealth(part, options.timeoutMs, options.signal, options.retries);
@@ -156,8 +177,14 @@ async function checkPartHealthWithLazyResolution(
     db
   ) {
     try {
-      // Resolve fresh URL for this specific part
-      const message = await botPool.fetchMessage((part as any).message_id, (part as any).channel_id ?? undefined);
+      // Acquire semaphore to cap concurrent Discord API calls (prevents rate-limiting)
+      if (discordSemaphore) await discordSemaphore.acquire();
+      let message: any;
+      try {
+        message = await botPool.fetchMessage((part as any).message_id, (part as any).channel_id ?? undefined);
+      } finally {
+        if (discordSemaphore) discordSemaphore.release();
+      }
 
       if (message && message.attachments.size > 0) {
         // Extract fresh URL (match by filename or index)
@@ -180,6 +207,11 @@ async function checkPartHealthWithLazyResolution(
 
           // Retry HEAD with fresh URL
           result = await checkPartHealth(freshPart, options.timeoutMs, options.signal, 1);
+
+          // If fresh URL works, mark as url_refreshed (cached URL was stale, not truly broken)
+          if (result.status === 'healthy') {
+            result = { ...result, status: 'url_refreshed' };
+          }
         }
       }
     } catch (err) {
@@ -189,6 +221,79 @@ async function checkPartHealthWithLazyResolution(
   }
 
   return result;
+}
+
+/**
+ * Resolve pass: for parts already known to be unhealthy (stale 404),
+ * skip the initial HEAD check and go straight to Discord message fetch.
+ * Returns which part IDs were confirmed accessible (url_refreshed).
+ */
+export async function runResolvePass(
+  parts: Array<HealthcheckPartInput & { message_id?: string; channel_id?: string | null }>,
+  fetchMessage: (messageId: string, channelId?: string | null) => Promise<any | null>,
+  db: DiscordriveDatabase,
+  options: { timeoutMs: number; signal?: AbortSignal },
+  onProgress?: (checked: number, total: number, refreshed: number) => void,
+): Promise<{ refreshed: number; stillUnhealthy: number; refreshedPartIds: number[] }> {
+  const semaphore = createSemaphore(3);
+  const refreshedPartIds: number[] = [];
+  let checked = 0;
+  const total = parts.length;
+  const queue = [...parts];
+  const inFlight = new Set<Promise<void>>();
+
+  return new Promise((resolve) => {
+    if (options.signal) {
+      options.signal.addEventListener('abort', () => { queue.length = 0; });
+    }
+
+    function startNext() {
+      while (inFlight.size < 3 && queue.length > 0 && !options.signal?.aborted) {
+        const part = queue.shift()!;
+        const p: Promise<void> = (async () => {
+          await semaphore.acquire();
+          try {
+            const messageId = (part as any).message_id;
+            const channelId = (part as any).channel_id ?? undefined;
+            if (!messageId) return;
+            const message = await fetchMessage(messageId, channelId);
+            if (message && message.attachments.size > 0) {
+              const attachments = Array.from(message.attachments.values());
+              const filename = extractFilenameFromUrl(part.discord_url);
+              const attachment = (attachments.find((a: any) => a.name === filename) || attachments[0]) as any;
+              if (attachment?.url) {
+                await db.updatePartUrls([{ id: part.id, discordUrl: attachment.url }]);
+                const freshPart = { ...part, discord_url: attachment.url };
+                const headResult = await checkPartHealth(freshPart, options.timeoutMs, options.signal, 1);
+                if (headResult.status === 'healthy') {
+                  refreshedPartIds.push(part.id);
+                }
+              }
+            }
+          } catch { /* keep as unhealthy */ }
+          finally {
+            semaphore.release();
+          }
+          checked++;
+          onProgress?.(checked, total, refreshedPartIds.length);
+        })().then(() => { inFlight.delete(p); startNext(); });
+        inFlight.add(p);
+      }
+      if (inFlight.size === 0) {
+        resolve({
+          refreshed: refreshedPartIds.length,
+          stillUnhealthy: total - refreshedPartIds.length,
+          refreshedPartIds,
+        });
+      }
+    }
+
+    if (parts.length === 0) {
+      resolve({ refreshed: 0, stillUnhealthy: 0, refreshedPartIds: [] });
+      return;
+    }
+    startNext();
+  });
 }
 
 /**
@@ -203,15 +308,19 @@ export async function runHealthcheck(
   signal?: AbortSignal,
   botPool?: BotPool,
   db?: DiscordriveDatabase,
-): Promise<{ healthy: number; unhealthy: number; errors: number }> {
+): Promise<{ healthy: number; unhealthy: number; errors: number; refreshed: number }> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const queue = [...parts];
   const inFlight = new Set<Promise<void>>();
   let cancelled = false;
 
+  // Limit concurrent Discord API calls to 3 to avoid rate-limiting during lazy URL resolution
+  const discordSemaphore = createSemaphore(3);
+
   let healthy = 0;
   let unhealthy = 0;
   let errors = 0;
+  let refreshed = 0;
   let checked = 0;
   const total = parts.length;
 
@@ -238,7 +347,7 @@ export async function runHealthcheck(
       if (cancelled) {
         if (inFlight.size === 0) {
           flushBuffer();
-          resolve({ healthy, unhealthy, errors });
+          resolve({ healthy, unhealthy, errors, refreshed });
         }
         return;
       }
@@ -252,14 +361,15 @@ export async function runHealthcheck(
               timeoutMs: cfg.requestTimeoutMs,
               signal,
               retries: 2,
-            })
+            }, discordSemaphore)
           : checkPartHealth(part, cfg.requestTimeoutMs, signal, 2);
 
         const promise = checkPromise
           .then((result) => {
             checked++;
 
-            if (result.status === 'healthy') healthy++;
+            if (result.status === 'url_refreshed') { healthy++; refreshed++; }
+            else if (result.status === 'healthy') healthy++;
             else if (result.status === 'unhealthy') unhealthy++;
             else errors++;
 
@@ -270,7 +380,7 @@ export async function runHealthcheck(
             }
 
             if (onProgress) {
-              onProgress(checked, total, healthy, unhealthy, errors);
+              onProgress(checked, total, healthy, unhealthy, errors, refreshed);
             }
 
             inFlight.delete(promise);
@@ -289,7 +399,7 @@ export async function runHealthcheck(
 
       if (inFlight.size === 0 && queue.length === 0) {
         flushBuffer();
-        resolve({ healthy, unhealthy, errors });
+        resolve({ healthy, unhealthy, errors, refreshed });
       }
     }
 

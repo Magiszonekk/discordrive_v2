@@ -35,7 +35,7 @@ const channels = [
 // Generate INSTANCES array dynamically
 const INSTANCES = [];
 let botOffset = 1; // Start from bot 1
-const basePort = 4001;
+const basePort = parseInt(process.env.PORT, 10) || 4001;
 
 // Instance 1: Direct (no proxy)
 const directBotCount = Math.min(botsPerInstance, totalBots);

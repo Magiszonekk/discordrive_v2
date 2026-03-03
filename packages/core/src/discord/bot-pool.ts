@@ -139,6 +139,10 @@ export class BotPool {
       });
     });
 
+    // Log guilds for diagnostics
+    const guildList = client.guilds.cache.map((g: any) => `${g.name} (${g.id})`).join(', ');
+    console.log(`[Discordrive] Bot ${index + 1} guilds: [${guildList || 'none'}]`);
+
     // Determine upload channel for this bot
     const uploadChannelId = this.getUploadChannelIdForBot(index);
 

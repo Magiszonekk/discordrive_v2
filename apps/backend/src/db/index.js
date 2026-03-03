@@ -246,12 +246,12 @@ function getAllFiles(folderId = null, userId = null, includeUnowned = false) {
   return getCoreDb().getAllFiles(folderId, userId, includeUnowned);
 }
 
-function getFilesPaginated(folderId = null, userId = null, includeUnowned = false, limit = 50, offset = 0) {
-  return getCoreDb().getFilesPaginated(folderId, userId, includeUnowned, limit, offset);
+function getFilesPaginated(folderId = null, userId = null, includeUnowned = false, limit = 50, offset = 0, search) {
+  return getCoreDb().getFilesPaginated(folderId, userId, includeUnowned, limit, offset, search);
 }
 
-function countFiles(folderId = null, userId = null, includeUnowned = false) {
-  return getCoreDb().countFiles(folderId, userId, includeUnowned);
+function countFiles(folderId = null, userId = null, includeUnowned = false, search) {
+  return getCoreDb().countFiles(folderId, userId, includeUnowned, search);
 }
 
 function getFileById(id) {

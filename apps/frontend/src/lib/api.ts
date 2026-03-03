@@ -34,6 +34,7 @@ export async function getFiles(
   folderId?: number | null,
   page: number = 1,
   limit: number = 50,
+  search?: string,
 ): Promise<FilesResponse> {
   const params = new URLSearchParams();
   if (folderId !== undefined && folderId !== null) {
@@ -41,6 +42,7 @@ export async function getFiles(
   }
   params.set("page", String(page));
   params.set("limit", String(limit));
+  if (search) params.set("search", search);
   return fetchJSON<FilesResponse>(`/files?${params.toString()}`);
 }
 

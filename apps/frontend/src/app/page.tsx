@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Header } from "@/components/layout/Header";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { FileUpload } from "@/components/files/FileUpload";
@@ -8,6 +8,8 @@ import { FileList } from "@/components/files/FileList";
 import { useFiles, useDeleteFile, useUpdateFile, useReorderFiles } from "@/hooks/useFiles";
 import { useFolders, useReorderFolders } from "@/hooks/useFolders";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Search, X } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -36,8 +38,18 @@ export default function HomePage() {
   const [folderShareOpen, setFolderShareOpen] = useState(false);
   const [folderDownloadOpen, setFolderDownloadOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
-  const filesQuery = useFiles(currentFolderId, currentPage, PAGE_SIZE);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchInput.trim());
+      setCurrentPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  const filesQuery = useFiles(currentFolderId, currentPage, PAGE_SIZE, debouncedSearch || undefined);
   const foldersQuery = useFolders();
   const updateFile = useUpdateFile();
   const deleteFile = useDeleteFile();
@@ -52,6 +64,8 @@ export default function HomePage() {
   const handleFolderSelect = useCallback((folderId: number | null) => {
     setCurrentFolderId(folderId);
     setCurrentPage(1);
+    setSearchInput("");
+    setDebouncedSearch("");
   }, []);
 
   const sensors = useSensors(
@@ -215,6 +229,25 @@ export default function HomePage() {
                         </Button>
                       </>
                     )}
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                      <Input
+                        type="search"
+                        placeholder="Szukaj plików..."
+                        value={searchInput}
+                        onChange={(e) => setSearchInput(e.target.value)}
+                        className="pl-8 w-44 sm:w-56 h-9"
+                      />
+                      {searchInput && (
+                        <button
+                          onClick={() => setSearchInput("")}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                          aria-label="Wyczyść wyszukiwanie"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
                     <div className="text-xs sm:text-sm text-muted-foreground">
                       {totalCount} file{totalCount === 1 ? "" : "s"}
                     </div>
